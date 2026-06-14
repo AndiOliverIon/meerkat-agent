@@ -99,7 +99,7 @@ func (c *Collector) sampleCore() model.Snapshot {
 	}
 	var load *model.Load
 	if one, five, fifteen, ok := readLoad(); ok {
-		load = &model.Load{One: round1(one), Five: round1(five), Fifteen: round1(fifteen)}
+		load = &model.Load{One: round2(one), Five: round2(five), Fifteen: round2(fifteen)}
 	}
 
 	return model.Snapshot{
@@ -136,6 +136,10 @@ func metric(used, total float64, unit string) *model.Metric {
 
 func round1(v float64) float64 {
 	return float64(int64(v*10+0.5)) / 10
+}
+
+func round2(v float64) float64 {
+	return float64(int64(v*100+0.5)) / 100
 }
 
 // f64ptr / intptr are small helpers for building nullable contract fields.
