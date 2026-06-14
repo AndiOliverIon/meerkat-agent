@@ -118,8 +118,27 @@ meerkat-agent serve --addr :8765
 | --- | --- | --- |
 | `GET /healthz` | none | liveness only |
 | `GET /v1/status` | bearer token | full snapshot JSON |
+| `POST /v1/config/mssql` | bearer token | tests and stores optional MSSQL inventory credentials |
 
 `/v1/status` is served over HTTPS with the agent's self-signed certificate.
+
+### Optional MSSQL inventory
+
+By default the agent can detect an MSSQL Docker container, but it cannot list
+databases inside SQL Server without SQL credentials. If the user chooses to
+enable deeper discovery, the app can send a limited SQL username/password to
+`POST /v1/config/mssql`.
+
+The agent then:
+
+- tests the credentials with a read-only metadata query;
+- stores them locally on the VPS in `/var/lib/meerkat-agent`, mode `0600`;
+- uses them only to list database names and sizes;
+- never returns the password from the API.
+
+Use a dedicated read-only monitoring login, not an administrator password.
+This is agent configuration, not a server action: the app does not restart
+services, mutate databases, or execute user workload changes.
 
 ### Enrollment
 

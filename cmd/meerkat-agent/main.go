@@ -34,7 +34,7 @@ func main() {
 
 	switch os.Args[1] {
 	case "once":
-		snap := collect.New().Once()
+		snap := collect.New(identity.DefaultDir).Once()
 		out, _ := json.MarshalIndent(snap, "", "  ")
 		fmt.Println(string(out))
 
@@ -43,7 +43,7 @@ func main() {
 		addr := fs.String("addr", ":8765", "address to listen on")
 		dir := fs.String("dir", identity.DefaultDir, "identity dir (cert/key/token)")
 		_ = fs.Parse(os.Args[2:])
-		srv, err := server.New(*addr, collect.New(), *dir)
+		srv, err := server.New(*addr, collect.New(*dir), *dir)
 		if err != nil {
 			fatal("serve:", err, "\nhint: run `meerkat-agent gen-cert` and `gen-token` first (the package does this on install)")
 		}

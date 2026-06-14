@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/AndiOliverIon/meerkat-agent/internal/identity"
 	"github.com/AndiOliverIon/meerkat-agent/internal/model"
 )
 
@@ -25,7 +26,8 @@ var Version = "0.0.0-dev"
 // Collector holds the previous counter sample so it can derive CPU% and
 // rates between reads. Safe for concurrent use.
 type Collector struct {
-	mu sync.Mutex
+	mu       sync.Mutex
+	stateDir string
 
 	hasPrev  bool
 	prevTime time.Time
@@ -34,7 +36,13 @@ type Collector struct {
 }
 
 // New returns a ready Collector.
-func New() *Collector { return &Collector{} }
+func New(stateDir ...string) *Collector {
+	dir := identity.DefaultDir
+	if len(stateDir) > 0 && stateDir[0] != "" {
+		dir = stateDir[0]
+	}
+	return &Collector{stateDir: dir}
+}
 
 // Snapshot reads the host once and discovers its running resources. Rates
 // CPU% is computed against the previous Snapshot call; the first call reports
@@ -45,7 +53,7 @@ func (c *Collector) Snapshot() model.Snapshot {
 	// Discovery touches the Docker socket and filesystem, so
 	// it runs outside the collector lock to keep concurrent reads responsive.
 	containers := readContainers()
-	databases := readDatabases(containers)
+	databases := readDatabases(c.stateDir, containers)
 	endpoints := readEndpoints()
 
 	snap.Containers = containers

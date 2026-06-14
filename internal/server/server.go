@@ -5,11 +5,14 @@ package server
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/AndiOliverIon/meerkat-agent/internal/collect"
+	agentconfig "github.com/AndiOliverIon/meerkat-agent/internal/config"
 	"github.com/AndiOliverIon/meerkat-agent/internal/identity"
 )
 
@@ -52,6 +55,8 @@ func (s *Server) Run() error {
 		writeJSON(w, s.c.Snapshot())
 	})))
 
+	mux.Handle("POST /v1/config/mssql", s.requireToken(http.HandlerFunc(s.handleMSSQLConfig)))
+
 	srv := &http.Server{
 		Addr:              s.addr,
 		Handler:           mux,
@@ -59,6 +64,68 @@ func (s *Server) Run() error {
 	}
 	log.Printf("meerkat-agent listening (https) on %s (GET /v1/status, /healthz)", s.addr)
 	return srv.ListenAndServeTLS(s.certFile, s.keyFile)
+}
+
+func (s *Server) handleMSSQLConfig(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Container string `json:"container"`
+		Username  string `json:"username"`
+		Password  string `json:"password"`
+	}
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16*1024))
+	if err := dec.Decode(&req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	req.Container = strings.TrimSpace(req.Container)
+	req.Username = strings.TrimSpace(req.Username)
+	if err := validateMSSQLConfigRequest(req.Container, req.Username, req.Password); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	databases, err := collect.TestMSSQLInventory(req.Container, req.Username, req.Password)
+	if err != nil {
+		http.Error(w, "could not verify MSSQL read-only inventory credentials", http.StatusBadRequest)
+		return
+	}
+
+	cfg := agentconfig.MSSQLInventory{
+		Container: req.Container,
+		Username:  req.Username,
+		Password:  req.Password,
+	}
+	if err := agentconfig.SaveMSSQLInventory(s.identityDir, cfg); err != nil {
+		http.Error(w, "could not store MSSQL inventory config", http.StatusInternalServerError)
+		return
+	}
+
+	saved, _ := agentconfig.LoadMSSQLInventories(s.identityDir)
+	var summary agentconfig.MSSQLInventorySummary
+	for _, item := range saved {
+		if item.Container == req.Container {
+			summary = agentconfig.SummarizeMSSQLInventory(item)
+			break
+		}
+	}
+	writeJSON(w, map[string]any{
+		"status":    "configured",
+		"config":    summary,
+		"databases": databases,
+	})
+}
+
+func validateMSSQLConfigRequest(container, username, password string) error {
+	if container == "" {
+		return errors.New("container is required")
+	}
+	if username == "" {
+		return errors.New("username is required")
+	}
+	if password == "" {
+		return errors.New("password is required")
+	}
+	return nil
 }
 
 // requireToken rejects any request whose Authorization header doesn't carry the

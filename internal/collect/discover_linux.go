@@ -9,8 +9,13 @@ package collect
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
@@ -22,6 +27,7 @@ import (
 	"sync"
 	"time"
 
+	agentconfig "github.com/AndiOliverIon/meerkat-agent/internal/config"
 	"github.com/AndiOliverIon/meerkat-agent/internal/model"
 )
 
@@ -246,12 +252,11 @@ var knownDBs = []dbEngine{
 	{engine: "PostgreSQL", procs: []string{"postgres"}, dataDirs: []string{"/var/lib/postgresql", "/var/lib/pgsql"}},
 }
 
-// readDatabases reports supported database sources the agent can discover
-// without app-provided credentials. PostgreSQL is currently detected from local
-// process/data-dir evidence. MSSQL-in-Docker is identified from container names
-// or images; per-database inventory inside MSSQL still needs a dedicated
-// read-only strategy.
-func readDatabases(containers []model.Container) []model.Database {
+// readDatabases reports supported database sources the agent can discover.
+// PostgreSQL is detected from local process/data-dir evidence. MSSQL-in-Docker
+// is identified automatically; per-database inventory is attempted only when
+// the user has explicitly stored read-only SQL credentials in the local agent.
+func readDatabases(stateDir string, containers []model.Container) []model.Database {
 	procs := runningProcs()
 	var out []model.Database
 
@@ -285,14 +290,16 @@ func readDatabases(containers []model.Container) []model.Database {
 		})
 	}
 
+	mssqlConfigs := loadMSSQLConfigMap(stateDir)
 	for _, c := range containers {
 		if isMSSQLContainer(c) {
-			out = append(out, model.Database{
-				Name:   c.Name,
-				Engine: "MSSQL (Docker)",
-				SizeGB: nil,
-				Status: c.State,
-			})
+			if cfg, ok := mssqlConfigs[c.Name]; ok {
+				if dbs, err := readMSSQLContainerDatabases(c.Name, cfg.Username, cfg.Password); err == nil {
+					out = append(out, dbs...)
+					continue
+				}
+			}
+			out = append(out, mssqlContainerPlaceholder(c))
 		}
 	}
 
@@ -301,6 +308,150 @@ func readDatabases(containers []model.Container) []model.Database {
 	}
 	sort.Slice(out, func(a, b int) bool { return out[a].Name < out[b].Name })
 	return out
+}
+
+func loadMSSQLConfigMap(stateDir string) map[string]agentconfig.MSSQLInventory {
+	configs, err := agentconfig.LoadMSSQLInventories(stateDir)
+	if err != nil || len(configs) == 0 {
+		return nil
+	}
+	out := make(map[string]agentconfig.MSSQLInventory, len(configs))
+	for _, cfg := range configs {
+		out[cfg.Container] = cfg
+	}
+	return out
+}
+
+func mssqlContainerPlaceholder(c model.Container) model.Database {
+	return model.Database{
+		Name:   c.Name,
+		Engine: "MSSQL (Docker)",
+		SizeGB: nil,
+		Status: c.State,
+	}
+}
+
+func readMSSQLContainerDatabases(container, username, password string) ([]model.Database, error) {
+	output, err := dockerExec(container, []string{
+		"sh", "-lc", mssqlSQLCmdShell(username),
+	}, []string{"SQLCMDPASSWORD=" + password})
+	if err != nil {
+		return nil, err
+	}
+	dbs := parseMSSQLInventory(output)
+	if len(dbs) == 0 {
+		return nil, errors.New("mssql inventory returned no databases")
+	}
+	return dbs, nil
+}
+
+func mssqlSQLCmdShell(username string) string {
+	query := `SET NOCOUNT ON; SELECT DB_NAME(database_id) + '|' + CONVERT(varchar(32), CAST(SUM(size) * 8.0 / 1024 / 1024 AS decimal(18,3))) FROM sys.master_files WHERE database_id > 4 GROUP BY database_id ORDER BY DB_NAME(database_id);`
+	return fmt.Sprintf(`SQLCMD="$(command -v sqlcmd || command -v /opt/mssql-tools18/bin/sqlcmd || command -v /opt/mssql-tools/bin/sqlcmd)" && "$SQLCMD" -S localhost -U %s -C -b -l 5 -h -1 -W -Q %s`,
+		shellQuote(username),
+		shellQuote(query),
+	)
+}
+
+func parseMSSQLInventory(output []byte) []model.Database {
+	var out []model.Database
+	scanner := bufio.NewScanner(bytes.NewReader(output))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "(") {
+			continue
+		}
+		parts := strings.Split(line, "|")
+		if len(parts) != 2 {
+			continue
+		}
+		name := strings.TrimSpace(parts[0])
+		sizeRaw := strings.TrimSpace(parts[1])
+		if name == "" {
+			continue
+		}
+		var size *float64
+		if parsed, err := strconv.ParseFloat(sizeRaw, 64); err == nil {
+			size = f64ptr(parsed)
+		}
+		out = append(out, model.Database{
+			Name:   name,
+			Engine: "MSSQL",
+			SizeGB: size,
+			Status: "running",
+		})
+	}
+	sort.Slice(out, func(a, b int) bool { return out[a].Name < out[b].Name })
+	return out
+}
+
+func TestMSSQLInventory(container, username, password string) ([]model.Database, error) {
+	return readMSSQLContainerDatabases(container, username, password)
+}
+
+func dockerExec(container string, cmd []string, env []string) ([]byte, error) {
+	client := dockerHTTP()
+	body := map[string]any{
+		"AttachStdout": true,
+		"AttachStderr": true,
+		"Tty":          false,
+		"Cmd":          cmd,
+		"Env":          env,
+	}
+	payload, _ := json.Marshal(body)
+	resp, err := client.Post("http://docker/v1.41/containers/"+container+"/exec", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		return nil, fmt.Errorf("docker exec create failed: %s", resp.Status)
+	}
+	var created struct {
+		ID string `json:"Id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		return nil, err
+	}
+	if created.ID == "" {
+		return nil, errors.New("docker exec create returned empty id")
+	}
+
+	startPayload := []byte(`{"Detach":false,"Tty":false}`)
+	startResp, err := client.Post("http://docker/v1.41/exec/"+created.ID+"/start", "application/json", bytes.NewReader(startPayload))
+	if err != nil {
+		return nil, err
+	}
+	defer startResp.Body.Close()
+	if startResp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("docker exec start failed: %s", startResp.Status)
+	}
+	raw, err := io.ReadAll(startResp.Body)
+	if err != nil {
+		return nil, err
+	}
+	return dockerDemux(raw), nil
+}
+
+func dockerDemux(raw []byte) []byte {
+	var out bytes.Buffer
+	for len(raw) >= 8 {
+		size := int(binary.BigEndian.Uint32(raw[4:8]))
+		raw = raw[8:]
+		if size < 0 || size > len(raw) {
+			break
+		}
+		out.Write(raw[:size])
+		raw = raw[size:]
+	}
+	if out.Len() > 0 {
+		return out.Bytes()
+	}
+	return raw
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
 }
 
 func isMSSQLContainer(c model.Container) bool {
