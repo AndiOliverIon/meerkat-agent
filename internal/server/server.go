@@ -15,27 +15,26 @@ import (
 
 // Server wraps a Collector and serves it over TLS.
 type Server struct {
-	addr     string
-	c        *collect.Collector
-	token    string
-	certFile string
-	keyFile  string
+	addr        string
+	c           *collect.Collector
+	identityDir string
+	certFile    string
+	keyFile     string
 }
 
 // New builds a Server bound to addr (e.g. ":8765"), loading the TLS cert and
 // bearer token from the identity dir. It returns an error if the token can't be
 // read — the agent must not serve unauthenticated.
 func New(addr string, c *collect.Collector, dir string) (*Server, error) {
-	token, err := identity.LoadToken(dir)
-	if err != nil {
+	if _, err := identity.LoadToken(dir); err != nil {
 		return nil, err
 	}
 	return &Server{
-		addr:     addr,
-		c:        c,
-		token:    token,
-		certFile: identity.CertPath(dir),
-		keyFile:  identity.KeyPath(dir),
+		addr:        addr,
+		c:           c,
+		identityDir: dir,
+		certFile:    identity.CertPath(dir),
+		keyFile:     identity.KeyPath(dir),
 	}, nil
 }
 
@@ -65,8 +64,13 @@ func (s *Server) Run() error {
 // requireToken rejects any request whose Authorization header doesn't carry the
 // agent's bearer token. Comparison is constant-time.
 func (s *Server) requireToken(next http.Handler) http.Handler {
-	want := []byte(s.token)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token, err := identity.LoadToken(s.identityDir)
+		if err != nil {
+			http.Error(w, "agent token unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		want := []byte(token)
 		got := []byte(bearer(r.Header.Get("Authorization")))
 		if subtle.ConstantTimeCompare(got, want) != 1 {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="meerkat-agent"`)

@@ -3,11 +3,18 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
+
+	"github.com/AndiOliverIon/meerkat-agent/internal/identity"
 )
 
 func TestRequireToken(t *testing.T) {
-	s := &Server{token: "s3cr3t-token"}
+	dir := t.TempDir()
+	if err := os.WriteFile(identity.TokenPath(dir), []byte("s3cr3t-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{identityDir: dir}
 	handler := s.requireToken(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -35,6 +42,46 @@ func TestRequireToken(t *testing.T) {
 				t.Errorf("status = %d, want %d", rec.Code, c.want)
 			}
 		})
+	}
+}
+
+func TestRequireTokenReloadsRotatedToken(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(identity.TokenPath(dir), []byte("old-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{identityDir: dir}
+	handler := s.requireToken(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+	req.Header.Set("Authorization", "Bearer old-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("old token before rotation status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	if err := os.WriteFile(identity.TokenPath(dir), []byte("new-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+	req.Header.Set("Authorization", "Bearer old-token")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("old token after rotation status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+	req.Header.Set("Authorization", "Bearer new-token")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("new token after rotation status = %d, want %d", rec.Code, http.StatusOK)
 	}
 }
 

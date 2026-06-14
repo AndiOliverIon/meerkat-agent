@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"os"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -115,5 +116,38 @@ func TestRotateTokenChangesOnlyToken(t *testing.T) {
 	}
 	if fpAfter != fpBefore {
 		t.Error("RotateToken changed the certificate fingerprint")
+	}
+}
+
+func TestRotateTokenPreservesModeAndOwner(t *testing.T) {
+	dir := t.TempDir()
+	tokBefore, _, err := GenerateToken(dir)
+	if err != nil {
+		t.Fatalf("GenerateToken: %v", err)
+	}
+	before, err := os.Stat(TokenPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeStat := before.Sys().(*syscall.Stat_t)
+
+	tokAfter, err := RotateToken(dir)
+	if err != nil {
+		t.Fatalf("RotateToken: %v", err)
+	}
+	if tokAfter == tokBefore {
+		t.Fatal("RotateToken did not change token")
+	}
+	after, err := os.Stat(TokenPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterStat := after.Sys().(*syscall.Stat_t)
+
+	if after.Mode().Perm() != 0o600 {
+		t.Fatalf("token mode = %v, want 0600", after.Mode().Perm())
+	}
+	if afterStat.Uid != beforeStat.Uid || afterStat.Gid != beforeStat.Gid {
+		t.Fatalf("token owner changed from %d:%d to %d:%d", beforeStat.Uid, beforeStat.Gid, afterStat.Uid, afterStat.Gid)
 	}
 }

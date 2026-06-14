@@ -142,6 +142,8 @@ sudo meerkat-agent rotate-token
 
 This replaces only the bearer token. The TLS certificate and fingerprint remain
 unchanged, so the app can recover without forcing a full certificate reset.
+The running service reloads the token from disk during authentication, so old
+tokens are rejected immediately after rotation without restarting the service.
 
 ---
 

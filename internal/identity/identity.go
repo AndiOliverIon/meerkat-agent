@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -130,7 +131,7 @@ func RotateToken(dir string) (string, error) {
 		return "", err
 	}
 	tok := base64.RawURLEncoding.EncodeToString(b)
-	if err := writeFile(TokenPath(dir), []byte(tok+"\n"), 0o600); err != nil {
+	if err := writeFilePreserveOwner(TokenPath(dir), []byte(tok+"\n"), 0o600); err != nil {
 		return "", err
 	}
 	return tok, nil
@@ -211,6 +212,33 @@ func fileExists(p string) bool {
 func writeFile(path string, data []byte, perm os.FileMode) error {
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, perm); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+func writeFilePreserveOwner(path string, data []byte, perm os.FileMode) error {
+	var uid, gid int
+	preserveOwner := false
+	if info, err := os.Stat(path); err == nil {
+		if st, ok := info.Sys().(*syscall.Stat_t); ok {
+			uid, gid = int(st.Uid), int(st.Gid)
+			preserveOwner = true
+		}
+	}
+
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, perm); err != nil {
+		return err
+	}
+	if preserveOwner {
+		if err := os.Chown(tmp, uid, gid); err != nil {
+			_ = os.Remove(tmp)
+			return err
+		}
+	}
+	if err := os.Chmod(tmp, perm); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
 	return os.Rename(tmp, path)
