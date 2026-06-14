@@ -91,9 +91,10 @@ func writeNewCert(dir string) error {
 		Subject:               pkix.Name{CommonName: host},
 		NotBefore:             now.Add(-time.Hour),
 		NotAfter:              now.Add(certValidity),
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment | x509.KeyUsageCertSign,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
+		IsCA:                  true,
 		DNSNames:              []string{host},
 		IPAddresses:           certIPs(),
 	}

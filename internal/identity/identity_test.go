@@ -30,6 +30,9 @@ func TestGenerateCertIsUsableAndIdempotent(t *testing.T) {
 	if validity := cert.NotAfter.Sub(cert.NotBefore); validity > 398*24*time.Hour {
 		t.Fatalf("cert validity = %s, want <= 398 days for Apple TLS compliance", validity)
 	}
+	if !cert.IsCA || cert.KeyUsage&x509.KeyUsageCertSign == 0 {
+		t.Fatal("self-signed server cert must be usable as its own trust anchor")
+	}
 
 	// Private key must not be world-readable.
 	fi, err := os.Stat(KeyPath(dir))
