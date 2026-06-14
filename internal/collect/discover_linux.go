@@ -1,7 +1,7 @@
 //go:build linux
 
-// Linux resource discovery for the snapshot's groups/containers/databases/
-// endpoints fields. Everything here is read-only and self-contained: the agent
+// Linux resource discovery for the snapshot's containers/databases/endpoints
+// fields. Everything here is read-only and self-contained: the agent
 // discovers what's running by reading what is *already on the box* (the Docker
 // socket, /proc, well-known data directories, and the local web-server config)
 // and never takes configuration, credentials, or external input.
@@ -63,10 +63,12 @@ func readContainers() []model.Container {
 	}
 
 	var raw []struct {
-		ID    string   `json:"Id"`
-		Names []string `json:"Names"`
-		Image string   `json:"Image"`
-		State string   `json:"State"`
+		ID      string       `json:"Id"`
+		Names   []string     `json:"Names"`
+		Image   string       `json:"Image"`
+		State   string       `json:"State"`
+		Ports   []dockerPort `json:"Ports"`
+		Created int64        `json:"Created"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return nil
@@ -79,19 +81,18 @@ func readContainers() []model.Container {
 		if len(c.Names) > 0 {
 			name = strings.TrimPrefix(c.Names[0], "/")
 		}
-		running := c.State == "running"
-		out[i] = model.Container{Name: name, Image: c.Image, Running: running}
-		if running {
-			wg.Add(1)
-			go func(idx int, id string) {
-				defer wg.Done()
-				// CPU/MemMB stay nil ("N/A") unless stats were obtained.
-				if cpu, mem, ok := containerStats(client, id); ok {
-					out[idx].CPU = intptr(cpu)
-					out[idx].MemMB = intptr(mem)
-				}
-			}(i, c.ID)
+		out[i] = model.Container{
+			Name:      name,
+			Image:     c.Image,
+			State:     c.State,
+			Ports:     formatDockerPorts(c.Ports),
+			CreatedAt: unixTimePtr(c.Created),
 		}
+		wg.Add(1)
+		go func(idx int, id string) {
+			defer wg.Done()
+			mergeContainerInspect(client, id, &out[idx])
+		}(i, c.ID)
 	}
 	wg.Wait()
 
@@ -99,67 +100,135 @@ func readContainers() []model.Container {
 	return out
 }
 
-// containerStats reads two frames (~1s apart) from the Docker stats stream and
-// derives CPU% and memory in MB the same way `docker stats` does. ok is false
-// if no stats frame could be read.
-func containerStats(client *http.Client, id string) (cpuPercent, memMB int, ok bool) {
-	resp, err := client.Get("http://docker/v1.41/containers/" + id + "/stats?stream=true")
+type dockerPort struct {
+	IP          string `json:"IP"`
+	PrivatePort int    `json:"PrivatePort"`
+	PublicPort  int    `json:"PublicPort"`
+	Type        string `json:"Type"`
+}
+
+func mergeContainerInspect(client *http.Client, id string, c *model.Container) {
+	resp, err := client.Get("http://docker/v1.41/containers/" + id + "/json")
 	if err != nil {
-		return 0, 0, false
+		return
 	}
 	defer resp.Body.Close()
-
-	type cpuUsage struct {
-		TotalUsage uint64 `json:"total_usage"`
-	}
-	type cpuStats struct {
-		CPUUsage    cpuUsage `json:"cpu_usage"`
-		SystemUsage uint64   `json:"system_cpu_usage"`
-		OnlineCPUs  int      `json:"online_cpus"`
-	}
-	type memStats struct {
-		Usage uint64            `json:"usage"`
-		Stats map[string]uint64 `json:"stats"`
-	}
-	var frame struct {
-		CPU    cpuStats `json:"cpu_stats"`
-		PreCPU cpuStats `json:"precpu_stats"`
-		Memory memStats `json:"memory_stats"`
+	if resp.StatusCode != http.StatusOK {
+		return
 	}
 
-	dec := json.NewDecoder(resp.Body)
-	got := 0
-	for n := 0; n < 2; n++ {
-		if err := dec.Decode(&frame); err != nil {
-			break
+	var raw struct {
+		Created      string `json:"Created"`
+		RestartCount int    `json:"RestartCount"`
+		State        struct {
+			Status     string `json:"Status"`
+			OOMKilled  bool   `json:"OOMKilled"`
+			Dead       bool   `json:"Dead"`
+			ExitCode   int    `json:"ExitCode"`
+			Error      string `json:"Error"`
+			StartedAt  string `json:"StartedAt"`
+			FinishedAt string `json:"FinishedAt"`
+			Health     *struct {
+				Status string `json:"Status"`
+			} `json:"Health"`
+		} `json:"State"`
+		NetworkSettings struct {
+			Ports map[string][]struct {
+				HostIP   string `json:"HostIp"`
+				HostPort string `json:"HostPort"`
+			} `json:"Ports"`
+		} `json:"NetworkSettings"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return
+	}
+
+	if raw.State.Status != "" {
+		c.State = raw.State.Status
+	}
+	if raw.State.Health != nil && raw.State.Health.Status != "" {
+		c.Health = strptr(raw.State.Health.Status)
+	}
+	c.RestartCount = intptr(raw.RestartCount)
+	c.OOMKilled = boolptr(raw.State.OOMKilled)
+	c.ExitCode = intptr(raw.State.ExitCode)
+	if raw.State.Error != "" {
+		c.Error = strptr(raw.State.Error)
+	}
+	if t := parseDockerTime(raw.Created); t != nil {
+		c.CreatedAt = t
+	}
+	c.StartedAt = parseDockerTime(raw.State.StartedAt)
+	c.FinishedAt = parseDockerTime(raw.State.FinishedAt)
+	if len(c.Ports) == 0 {
+		c.Ports = formatInspectPorts(raw.NetworkSettings.Ports)
+	}
+	if raw.State.Dead {
+		c.State = "dead"
+	}
+}
+
+func formatDockerPorts(ports []dockerPort) []string {
+	var out []string
+	for _, p := range ports {
+		if p.PrivatePort == 0 {
+			continue
 		}
-		got++
+		proto := p.Type
+		if proto == "" {
+			proto = "tcp"
+		}
+		private := strconv.Itoa(p.PrivatePort) + "/" + proto
+		if p.PublicPort > 0 {
+			out = append(out, strconv.Itoa(p.PublicPort)+"->"+private)
+		} else {
+			out = append(out, private)
+		}
 	}
-	if got == 0 {
-		return 0, 0, false
-	}
+	sort.Strings(out)
+	return out
+}
 
-	cpuDelta := float64(frame.CPU.CPUUsage.TotalUsage) - float64(frame.PreCPU.CPUUsage.TotalUsage)
-	sysDelta := float64(frame.CPU.SystemUsage) - float64(frame.PreCPU.SystemUsage)
-	cpus := frame.CPU.OnlineCPUs
-	if cpus == 0 {
-		cpus = 1
+func formatInspectPorts(ports map[string][]struct {
+	HostIP   string `json:"HostIp"`
+	HostPort string `json:"HostPort"`
+}) []string {
+	var out []string
+	for private, bindings := range ports {
+		if len(bindings) == 0 {
+			out = append(out, private)
+			continue
+		}
+		for _, b := range bindings {
+			if b.HostPort == "" {
+				out = append(out, private)
+			} else {
+				out = append(out, b.HostPort+"->"+private)
+			}
+		}
 	}
-	if sysDelta > 0 && cpuDelta > 0 {
-		cpuPercent = int(cpuDelta / sysDelta * float64(cpus) * 100)
-	}
+	sort.Strings(out)
+	return out
+}
 
-	// Subtract page cache so the figure reflects working-set memory, matching
-	// `docker stats`. Key name differs between cgroup v1 ("cache") and v2
-	// ("inactive_file").
-	usage := frame.Memory.Usage
-	if cache, ok := frame.Memory.Stats["inactive_file"]; ok && cache <= usage {
-		usage -= cache
-	} else if cache, ok := frame.Memory.Stats["cache"]; ok && cache <= usage {
-		usage -= cache
+func unixTimePtr(sec int64) *time.Time {
+	if sec <= 0 {
+		return nil
 	}
-	memMB = int(usage / (1024 * 1024))
-	return cpuPercent, memMB, true
+	t := time.Unix(sec, 0).UTC()
+	return &t
+}
+
+func parseDockerTime(raw string) *time.Time {
+	if raw == "" || strings.HasPrefix(raw, "0001-01-01") {
+		return nil
+	}
+	t, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		return nil
+	}
+	t = t.UTC()
+	return &t
 }
 
 // ---------------------------------------------------------------------------
@@ -171,20 +240,18 @@ type dbEngine struct {
 	engine   string
 	procs    []string // process comm names that indicate this engine
 	dataDirs []string // candidate data directories
-	perDB    bool     // subdirectories of the data dir map to database names
 }
 
 var knownDBs = []dbEngine{
 	{engine: "PostgreSQL", procs: []string{"postgres"}, dataDirs: []string{"/var/lib/postgresql", "/var/lib/pgsql"}},
-	{engine: "MySQL", procs: []string{"mysqld", "mariadbd"}, dataDirs: []string{"/var/lib/mysql"}, perDB: true},
-	{engine: "Redis", procs: []string{"redis-server"}, dataDirs: []string{"/var/lib/redis"}},
-	{engine: "MongoDB", procs: []string{"mongod"}, dataDirs: []string{"/var/lib/mongodb", "/var/lib/mongo"}},
 }
 
-// readDatabases reports each detected database engine, its on-disk size, and
-// whether it is currently running. For MySQL/MariaDB each schema directory is
-// reported individually so the app shows a real per-database list.
-func readDatabases() []model.Database {
+// readDatabases reports supported database sources the agent can discover
+// without app-provided credentials. PostgreSQL is currently detected from local
+// process/data-dir evidence. MSSQL-in-Docker is identified from container names
+// or images; per-database inventory inside MSSQL still needs a dedicated
+// read-only strategy.
+func readDatabases(containers []model.Container) []model.Database {
 	procs := runningProcs()
 	var out []model.Database
 
@@ -201,37 +268,32 @@ func readDatabases() []model.Database {
 			continue // engine neither running nor installed
 		}
 
-		status := "offline"
+		status := "stopped"
 		if running {
-			status = "ok"
+			status = "running"
 		}
 
-		if db.perDB && dataDir != "" {
-			if schemas := mysqlSchemas(dataDir); len(schemas) > 0 {
-				for _, s := range schemas {
-					out = append(out, model.Database{
-						Name:   s.name,
-						Engine: db.engine,
-						SizeGB: s.sizeGB, // nil if the schema dir wasn't readable
-						Status: status,
-					})
-				}
-				continue
-			}
-		}
-
-		// Cluster-level entry. SizeGB is nil ("N/A") when there's no data dir or
-		// it couldn't be read (e.g. permissions).
 		var size *float64
 		if dataDir != "" {
 			size = dirSizeGB(dataDir)
 		}
 		out = append(out, model.Database{
-			Name:   db.engine,
+			Name:   "PostgreSQL cluster",
 			Engine: db.engine,
 			SizeGB: size,
 			Status: status,
 		})
+	}
+
+	for _, c := range containers {
+		if isMSSQLContainer(c) {
+			out = append(out, model.Database{
+				Name:   c.Name,
+				Engine: "MSSQL (Docker)",
+				SizeGB: nil,
+				Status: c.State,
+			})
+		}
 	}
 
 	if out == nil {
@@ -239,6 +301,14 @@ func readDatabases() []model.Database {
 	}
 	sort.Slice(out, func(a, b int) bool { return out[a].Name < out[b].Name })
 	return out
+}
+
+func isMSSQLContainer(c model.Container) bool {
+	s := strings.ToLower(c.Name + " " + c.Image)
+	return strings.Contains(s, "mssql") ||
+		strings.Contains(s, "sqlserver") ||
+		strings.Contains(s, "sql-server") ||
+		strings.Contains(s, "azure-sql-edge")
 }
 
 // runningProcs returns the set of process "comm" names currently running.
@@ -273,35 +343,8 @@ func firstExistingDir(paths []string) string {
 	return ""
 }
 
-type schemaDir struct {
-	name   string
-	sizeGB *float64 // nil if the schema dir couldn't be read
-}
-
-// mysqlSchemas treats each non-system subdirectory of the MySQL data dir as a
-// database schema and sizes it on disk.
-func mysqlSchemas(dataDir string) []schemaDir {
-	entries, err := os.ReadDir(dataDir)
-	if err != nil {
-		return nil
-	}
-	system := map[string]bool{"mysql": true, "performance_schema": true, "sys": true}
-	var out []schemaDir
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		if system[name] || strings.HasPrefix(name, "#") {
-			continue
-		}
-		out = append(out, schemaDir{name: name, sizeGB: dirSizeGB(filepath.Join(dataDir, name))})
-	}
-	return out
-}
-
 // dirSizeGB sums the apparent size of all files under root and returns it
-// rounded, or nil ("N/A") if root itself can't be accessed (e.g. permission
+// rounded, or nil if root itself can't be accessed (e.g. permission
 // denied). Individual unreadable entries deeper in the tree are skipped.
 func dirSizeGB(root string) *float64 {
 	if _, err := os.Stat(root); err != nil {
@@ -330,8 +373,8 @@ func dirSizeGB(root string) *float64 {
 
 // ---------------------------------------------------------------------------
 // Endpoints — discover the hostnames this box serves from its own web-server
-// configuration, then probe each for reachability. The agent only ever
-// contacts hostnames already configured on this machine.
+// configuration. Free v1 reports names only; outside reachability belongs to
+// Pro relay checks.
 // ---------------------------------------------------------------------------
 
 const maxEndpoints = 25
@@ -343,34 +386,32 @@ func readEndpoints() []model.Endpoint {
 	}
 
 	out := make([]model.Endpoint, len(hosts))
-	var wg sync.WaitGroup
 	for i, h := range hosts {
-		wg.Add(1)
-		go func(idx int, host string) {
-			defer wg.Done()
-			out[idx] = probeEndpoint(host)
-		}(i, h)
+		source := endpointSources[h]
+		out[i] = model.Endpoint{Name: h, Source: strptr(source)}
 	}
-	wg.Wait()
 
 	sort.Slice(out, func(a, b int) bool { return out[a].Name < out[b].Name })
 	return out
 }
 
+var endpointSources = map[string]string{}
+
 // discoverHostnames reads nginx, Apache, and Caddy config to collect the
 // hostnames this server is configured to serve.
 func discoverHostnames() []string {
 	set := map[string]bool{}
+	endpointSources = map[string]string{}
 
 	for _, dir := range []string{"/etc/nginx/sites-enabled", "/etc/nginx/conf.d"} {
 		for _, f := range listFiles(dir) {
-			scanDirective(f, "server_name", set)
+			scanDirective(f, "server_name", "nginx", set)
 		}
 	}
 	for _, dir := range []string{"/etc/apache2/sites-enabled", "/etc/httpd/conf.d"} {
 		for _, f := range listFiles(dir) {
-			scanDirective(f, "servername", set)
-			scanDirective(f, "serveralias", set)
+			scanDirective(f, "servername", "apache", set)
+			scanDirective(f, "serveralias", "apache", set)
 		}
 	}
 	scanCaddyfile("/etc/caddy/Caddyfile", set)
@@ -402,7 +443,7 @@ func listFiles(dir string) []string {
 
 // scanDirective collects the arguments of a config directive (e.g. nginx
 // "server_name a.com b.com;" or Apache "ServerName a.com") from a file.
-func scanDirective(path, directive string, set map[string]bool) {
+func scanDirective(path, directive, source string, set map[string]bool) {
 	f, err := os.Open(path)
 	if err != nil {
 		return
@@ -425,6 +466,7 @@ func scanDirective(path, directive string, set map[string]bool) {
 				continue
 			}
 			set[strings.ToLower(tok)] = true
+			endpointSources[strings.ToLower(tok)] = source
 		}
 	}
 }
@@ -456,12 +498,13 @@ func scanCaddyfile(path string, set map[string]bool) {
 				continue
 			}
 			set[strings.ToLower(tok)] = true
+			endpointSources[strings.ToLower(tok)] = "caddy"
 		}
 	}
 }
 
 // validHost rejects wildcards, catch-alls, and anything that isn't a plausible
-// DNS hostname so the agent never probes a junk target.
+// DNS hostname so the app never displays a junk target.
 func validHost(h string) bool {
 	if h == "" || h == "_" || strings.HasPrefix(h, "*") || strings.HasPrefix(h, "localhost") {
 		return false
@@ -475,40 +518,4 @@ func validHost(h string) bool {
 		}
 	}
 	return true
-}
-
-// probeClient records the first response instead of following redirects, so a
-// http->https redirect is reported as reachable rather than chased into a loop.
-var probeClient = &http.Client{
-	Timeout: 3 * time.Second,
-	CheckRedirect: func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	},
-}
-
-func probeEndpoint(host string) model.Endpoint {
-	for _, scheme := range []string{"https", "http"} {
-		url := scheme + "://" + host + "/"
-		req, err := http.NewRequest(http.MethodGet, url, nil)
-		if err != nil {
-			continue
-		}
-		req.Header.Set("User-Agent", "meerkat-agent/"+Version)
-
-		start := time.Now()
-		resp, err := probeClient.Do(req)
-		ms := int(time.Since(start).Milliseconds())
-		if err != nil {
-			continue
-		}
-		resp.Body.Close()
-		return model.Endpoint{
-			Name:       host,
-			URL:        url,
-			Reachable:  true,
-			ResponseMs: intptr(ms),
-			StatusCode: intptr(resp.StatusCode),
-		}
-	}
-	return model.Endpoint{Name: host, URL: "https://" + host + "/", Reachable: false}
 }

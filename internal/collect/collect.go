@@ -23,40 +23,31 @@ import (
 var Version = "0.0.0-dev"
 
 // Collector holds the previous counter sample so it can derive CPU% and
-// network throughput between reads. Safe for concurrent use.
+// rates between reads. Safe for concurrent use.
 type Collector struct {
 	mu sync.Mutex
 
 	hasPrev  bool
 	prevTime time.Time
 	prevCPUBusy,
-	prevCPUTotal,
-	prevRx,
-	prevTx uint64
+	prevCPUTotal uint64
 }
 
 // New returns a ready Collector.
 func New() *Collector { return &Collector{} }
 
 // Snapshot reads the host once and discovers its running resources. Rates
-// (CPU%, network) are computed against the previous Snapshot call; the first
-// call reports zero rates.
+// CPU% is computed against the previous Snapshot call; the first call reports
+// zero CPU rate.
 func (c *Collector) Snapshot() model.Snapshot {
 	snap := c.sampleCore()
 
-	// Discovery touches the Docker socket, the filesystem, and the network, so
+	// Discovery touches the Docker socket and filesystem, so
 	// it runs outside the collector lock to keep concurrent reads responsive.
 	containers := readContainers()
-	databases := readDatabases()
+	databases := readDatabases(containers)
 	endpoints := readEndpoints()
 
-	// If nothing could be discovered at all (e.g. unsupported platform), leave
-	// groups nil ("not obtained"); otherwise derive them.
-	if containers == nil && databases == nil && endpoints == nil {
-		snap.Groups = nil
-	} else {
-		snap.Groups = buildGroups(containers, databases, endpoints)
-	}
 	snap.Containers = containers
 	snap.Databases = databases
 	snap.Endpoints = endpoints
@@ -64,7 +55,7 @@ func (c *Collector) Snapshot() model.Snapshot {
 }
 
 // sampleCore reads the fast kernel counters and derives the core metrics
-// (host, CPU, memory, disk, network). It holds the lock only for the brief
+// (host, CPU, memory, disk, load). It holds the lock only for the brief
 // counter read; discovery fields are filled in by Snapshot.
 func (c *Collector) sampleCore() model.Snapshot {
 	c.mu.Lock()
@@ -72,7 +63,6 @@ func (c *Collector) sampleCore() model.Snapshot {
 
 	now := time.Now()
 	cpuBusy, cpuTotal, cpuOK := readCPUSample()
-	iface, rx, tx, netOK := readNetSample()
 
 	var cpu *model.Metric
 	if cpuOK {
@@ -85,24 +75,9 @@ func (c *Collector) sampleCore() model.Snapshot {
 		cpu = metric(cpuPct, 100, "%")
 	}
 
-	var network *model.Network
-	if netOK {
-		var rxMbps, txMbps float64
-		if c.hasPrev {
-			if dt := now.Sub(c.prevTime).Seconds(); dt > 0 {
-				rxMbps = float64(rx-c.prevRx) * 8 / 1e6 / dt
-				txMbps = float64(tx-c.prevTx) * 8 / 1e6 / dt
-			}
-		}
-		network = &model.Network{Interface: iface, RxMbps: round1(rxMbps), TxMbps: round1(txMbps)}
-	}
-
 	c.prevTime = now
 	if cpuOK {
 		c.prevCPUBusy, c.prevCPUTotal = cpuBusy, cpuTotal
-	}
-	if netOK {
-		c.prevRx, c.prevTx = rx, tx
 	}
 	c.hasPrev = true
 
@@ -114,6 +89,10 @@ func (c *Collector) sampleCore() model.Snapshot {
 	if used, total, ok := readDisk("/"); ok {
 		disk = metric(used, total, "GB")
 	}
+	var load *model.Load
+	if one, five, fifteen, ok := readLoad(); ok {
+		load = &model.Load{One: round1(one), Five: round1(five), Fifteen: round1(fifteen)}
+	}
 
 	return model.Snapshot{
 		AgentVersion: Version,
@@ -122,7 +101,7 @@ func (c *Collector) sampleCore() model.Snapshot {
 		CPU:          cpu,
 		Memory:       memory,
 		Disk:         disk,
-		Network:      network,
+		Load:         load,
 		// Discovery fields are filled in by Snapshot after the lock is released.
 	}
 }
@@ -154,3 +133,5 @@ func round1(v float64) float64 {
 // f64ptr / intptr are small helpers for building nullable contract fields.
 func f64ptr(v float64) *float64 { return &v }
 func intptr(v int) *int         { return &v }
+func strptr(v string) *string   { return &v }
+func boolptr(v bool) *bool      { return &v }

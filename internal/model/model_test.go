@@ -10,18 +10,28 @@ import (
 // TestContractNullVsZeroVsEmpty verifies the three distinct, honest states:
 // value (obtained), 0/[] (obtained & genuinely zero/empty), null (not obtained).
 func TestContractNullVsZeroVsEmpty(t *testing.T) {
+	health := "healthy"
+	oomKilled := true
+	created := time.Unix(1, 0).UTC()
+
 	snap := Snapshot{
 		AgentVersion: "1.2.3",
 		CollectedAt:  time.Unix(0, 0).UTC(),
 		Host:         Host{Name: "box", Platform: "linux"}, // UptimeSeconds nil
 		CPU:          &Metric{Used: 0, Total: 100, Unit: "%", Percent: 0},
-		Memory:       nil,                                                          // not obtained
-		Disk:         &Metric{Used: 0},                                             // obtained, genuinely zero
-		Network:      nil,                                                          // not obtained
-		Containers:   []Container{},                                                // obtained, none found
-		Databases:    nil,                                                          // not obtained
-		Endpoints:    []Endpoint{{Name: "x", URL: "https://x/", Reachable: false}}, // ResponseMs/StatusCode nil
-		Groups:       nil,
+		Memory:       nil,              // not obtained
+		Disk:         &Metric{Used: 0}, // obtained, genuinely zero
+		Load:         &Load{One: 0, Five: 0, Fifteen: 0},
+		Containers: []Container{{
+			Name:      "web",
+			Image:     "nginx:1.27",
+			State:     "running",
+			Health:    &health,
+			CreatedAt: &created,
+			OOMKilled: &oomKilled,
+		}},
+		Databases: nil,                          // not obtained
+		Endpoints: []Endpoint{{Name: "x.test"}}, // names-only in v1
 	}
 
 	b, err := json.Marshal(snap)
@@ -31,15 +41,16 @@ func TestContractNullVsZeroVsEmpty(t *testing.T) {
 	s := string(b)
 
 	mustContain := []string{
-		`"memory":null`,          // not obtained
-		`"network":null`,         // not obtained
-		`"databases":null`,       // not obtained
-		`"uptimeSeconds":null`,   // not obtained
-		`"containers":[]`,        // obtained, empty
+		`"memory":null`,        // not obtained
+		`"databases":null`,     // not obtained
+		`"uptimeSeconds":null`, // not obtained
+		`"state":"running"`,    // Docker state is factual
+		`"health":"healthy"`,   // Docker health if exposed
+		`"oomKilled":true`,     // Docker reason signal
+		`"endpoints":[{"name":"x.test","source":null}]`, // endpoint name only
+		`"load":{`,               // obtained
 		`"cpu":{`,                // obtained
 		`"disk":{`,               // obtained, genuinely zero
-		`"responseMs":null`,      // unreachable endpoint -> not obtained
-		`"statusCode":null`,      // unreachable endpoint -> not obtained
 		`"agentVersion":"1.2.3"`, // always present
 	}
 	for _, want := range mustContain {

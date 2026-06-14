@@ -118,6 +118,24 @@ func GenerateToken(dir string) (token string, created bool, err error) {
 	return tok, true, nil
 }
 
+// RotateToken replaces the bearer token while leaving the TLS certificate
+// unchanged. This supports app re-enrollment and periodic token rotation without
+// forcing users to purge/reinstall the agent.
+func RotateToken(dir string) (string, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	tok := base64.RawURLEncoding.EncodeToString(b)
+	if err := writeFile(TokenPath(dir), []byte(tok+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	return tok, nil
+}
+
 // LoadToken reads the bearer token from dir.
 func LoadToken(dir string) (string, error) {
 	b, err := os.ReadFile(TokenPath(dir))

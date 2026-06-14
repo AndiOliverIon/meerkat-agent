@@ -3,7 +3,7 @@
 // Darwin (macOS) is a limited fallback for development. A full Darwin metric
 // backend (host_statistics/vm_stat/netstat, launchd discovery) is planned.
 // For now this reports host info and real disk usage; everything not yet
-// implemented returns ok=false so it marshals to JSON null ("N/A") rather than
+// implemented returns ok=false so it marshals to JSON null rather than
 // a misleading 0.
 
 package collect
@@ -45,6 +45,6 @@ func readDisk(path string) (usedGB, totalGB float64, ok bool) {
 	return (total - free) / 1e9, total / 1e9, true
 }
 
-// CPU and network sampling are not yet implemented on Darwin.
-func readCPUSample() (busy, total uint64, ok bool)          { return 0, 0, false }
-func readNetSample() (iface string, rx, tx uint64, ok bool) { return "", 0, 0, false }
+// CPU and load sampling are not yet implemented on Darwin.
+func readCPUSample() (busy, total uint64, ok bool)    { return 0, 0, false }
+func readLoad() (one, five, fifteen float64, ok bool) { return 0, 0, 0, false }

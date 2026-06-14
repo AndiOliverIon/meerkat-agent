@@ -127,6 +127,31 @@ func readDisk(path string) (usedGB, totalGB float64, ok bool) {
 	return usedGB, totalGB, true
 }
 
+// readLoad returns the 1/5/15 minute load averages from /proc/loadavg.
+func readLoad() (one, five, fifteen float64, ok bool) {
+	b, err := os.ReadFile("/proc/loadavg")
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	fields := strings.Fields(string(b))
+	if len(fields) < 3 {
+		return 0, 0, 0, false
+	}
+	one, err = strconv.ParseFloat(fields[0], 64)
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	five, err = strconv.ParseFloat(fields[1], 64)
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	fifteen, err = strconv.ParseFloat(fields[2], 64)
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	return one, five, fifteen, true
+}
+
 // readCPUSample returns cumulative busy and total CPU jiffies from /proc/stat.
 // ok is false if /proc/stat can't be read or parsed.
 func readCPUSample() (busy, total uint64, ok bool) {
@@ -148,36 +173,4 @@ func readCPUSample() (busy, total uint64, ok bool) {
 		}
 	}
 	return total - idle, total, true
-}
-
-// readNetSample returns the aggregate rx/tx byte counters across all real
-// (non-loopback) interfaces from /proc/net/dev. ok is false if the file can't
-// be read.
-func readNetSample() (iface string, rx, tx uint64, ok bool) {
-	f, err := os.Open("/proc/net/dev")
-	if err != nil {
-		return "", 0, 0, false
-	}
-	defer f.Close()
-	s := bufio.NewScanner(f)
-	for s.Scan() {
-		line := s.Text()
-		name, rest, found := strings.Cut(line, ":")
-		if !found {
-			continue
-		}
-		name = strings.TrimSpace(name)
-		if name == "lo" {
-			continue
-		}
-		fields := strings.Fields(rest)
-		if len(fields) < 9 {
-			continue
-		}
-		r, _ := strconv.ParseUint(fields[0], 10, 64)
-		t, _ := strconv.ParseUint(fields[8], 10, 64)
-		rx += r
-		tx += t
-	}
-	return "aggregate", rx, tx, true
 }

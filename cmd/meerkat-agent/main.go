@@ -6,6 +6,7 @@
 //	meerkat-agent serve [--addr][--dir] serve GET /v1/status over HTTPS
 //	meerkat-agent gen-cert [--dir]    generate the TLS cert/key if absent (install)
 //	meerkat-agent gen-token [--dir]   generate the bearer token if absent (install)
+//	meerkat-agent rotate-token [--dir][--addr] replace token and print enrollment
 //	meerkat-agent fingerprint [--dir] print the TLS cert fingerprint
 //	meerkat-agent enroll [--dir][--addr] print the app enrollment details
 //	meerkat-agent version             print the agent version
@@ -73,6 +74,18 @@ func main() {
 			fmt.Println("meerkat-agent: bearer token already present in", dir, "(left unchanged)")
 		}
 
+	case "rotate-token":
+		fs := flag.NewFlagSet("rotate-token", flag.ExitOnError)
+		dir := fs.String("dir", identity.DefaultDir, "identity dir (cert/key/token)")
+		addr := fs.String("addr", "", "public address the app should use (host:port or https://host:port)")
+		_ = fs.Parse(os.Args[2:])
+		if _, err := identity.RotateToken(*dir); err != nil {
+			fatal("rotate-token:", err)
+		}
+		if err := printEnrollment(*dir, *addr); err != nil {
+			fatal("rotate-token:", err)
+		}
+
 	case "fingerprint":
 		dir := dirFlag("fingerprint")
 		fp, err := identity.Fingerprint(dir)
@@ -113,10 +126,12 @@ func printEnrollment(dir, addr string) error {
 	if addr == "" {
 		addr = identity.PrimaryIP() + ":8765"
 	}
+	addr = normalizeAddress(addr)
 
 	code := base64.RawURLEncoding.EncodeToString(mustJSON(map[string]string{
-		"addr": addr, "fingerprint": fp, "token": token,
+		"address": addr, "fingerprint": fp, "token": token,
 	}))
+	onePaste := "address=" + addr + " token=" + token + " fingerprint=" + fp
 
 	fmt.Println(strings.TrimSpace(`
 Meerkat agent — add this server in the app:
@@ -125,12 +140,22 @@ Meerkat agent — add this server in the app:
   Fingerprint:  ` + fp + `
   Token:        ` + token + `
 
-One-paste code:
+One-paste line:
+  ` + onePaste + `
+
+One-paste code (JSON base64):
   ` + code + `
 
 (If the address is wrong, pass --addr host:port. Make sure that address is
 reachable from your phone — open the port in your firewall/security group.)`))
 	return nil
+}
+
+func normalizeAddress(addr string) string {
+	if strings.HasPrefix(addr, "http://") || strings.HasPrefix(addr, "https://") {
+		return addr
+	}
+	return "https://" + addr
 }
 
 func dirFlag(cmd string) string {
@@ -158,6 +183,7 @@ usage:
   meerkat-agent serve [--addr][--dir] serve GET /v1/status over HTTPS (default :8765)
   meerkat-agent gen-cert [--dir]     generate the TLS cert/key if absent (install hook)
   meerkat-agent gen-token [--dir]    generate the bearer token if absent (install hook)
+  meerkat-agent rotate-token [--dir][--addr] replace token and print enrollment details
   meerkat-agent fingerprint [--dir]  print the TLS cert fingerprint
   meerkat-agent enroll [--dir][--addr] print the app enrollment details
   meerkat-agent version              print version`)

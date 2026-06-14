@@ -2,200 +2,183 @@
 
 The open-source monitoring agent for **Meerkat**, a server monitor for iOS.
 
-You install this small program **on a server you own**. It reads the machine's
-health — CPU, memory, disk, network — and exposes it as a single JSON document
-that the Meerkat app reads. That's the whole job.
+You install this small program **on a server you own**. It reads supported
+machine facts and discovered resources, then exposes one HTTPS JSON document
+that the Meerkat app reads in Free/direct mode.
 
-> **Don't trust us — read it.** This agent is the trust foundation of the product.
-> It is intentionally tiny, dependency-free, and read-only, so you (or your AI) can
-> audit every line before running it on your box. Your data never passes through
-> our servers — the app talks directly to *your* agent.
+> **Don't trust us blindly. Read it.** This agent is the trust foundation of the
+> product. It is intentionally small, dependency-light, and read-only: no remote
+> shell, no UI-triggered server actions, and no credentials sent from the app.
+
+---
+
+## Current stage
+
+This repo is being prepared for the **Free/direct v1 flow**:
+
+1. User installs `meerkat-agent` from our signed GitHub apt repository.
+2. Agent generates a self-signed TLS certificate and bearer token.
+3. Agent prints one enrollment string for the iOS app.
+4. iOS app connects directly to `https://server:8765/v1/status`.
+5. App pins/trusts the agent certificate and uses the token for `/v1/status`.
+
+Packaging and GitHub Actions publishing are the next stage. The apt URLs below
+are placeholders until that publishing flow exists.
 
 ---
 
 ## Design principles
 
-- **Zero dependencies.** Pure Go standard library. Nothing to vet but the code in
-  this repo.
-- **Read-only.** The agent only *reads* the machine. It opens no shells, runs no
-  remote commands, holds no credentials, and writes nothing to your system. The
-  only network it originates is reachability probes to hostnames **your own
-  web-server config already serves** (see *What the agent reads*, below).
-- **No configuration, no input.** There is nothing to configure and the agent
-  accepts no input from the request. It discovers what's running by reading what
-  is already on the box, so an auditor can reason about its entire behaviour from
-  the source alone.
-- **A single static binary.** One build runs across distributions — glibc or musl
-  (Alpine), amd64 or arm64 — with no runtime to install.
-- **One contract, every platform.** The JSON shape is identical on every OS and
-  mirrors the Meerkat app's data model.
+- **Read-only for v1.** The agent observes and reports. It does not restart
+  containers, run commands, apply updates, or mutate the user's VPS.
+- **Direct Free mode.** The Free app talks directly to the installed agent. No
+  Meerkat account or relay is required for Free.
+- **Nullable honesty.** Values that cannot be obtained are JSON `null`, never
+  fake zeroes. Empty arrays mean the source was read and nothing was found.
+- **No app-provided secrets.** The iOS app should not store database passwords.
+  If deeper database discovery needs credentials later, they must be configured
+  on the VPS side for the agent.
+- **No magic discovery.** The agent reports what it can read from supported
+  local sources.
 
 ---
 
-## Status
+## What the agent reads
 
-**Linux: feature-complete for the app's data model (v0.2.x).** Every field the
-Meerkat app renders is now produced on Linux. macOS remains a limited fallback.
+| Area | Current source | Notes |
+| --- | --- | --- |
+| Host | hostname, OS files, kernel, arch, uptime | Always included where possible. |
+| System metrics | `/proc`, `statfs`, `/proc/loadavg` | CPU, memory, disk, and load average. |
+| Docker containers | Docker API over `/var/run/docker.sock` | State, health, restart count, ports, timestamps, exit code, OOM flag, error text. |
+| PostgreSQL | process table + known data dirs | Reports a PostgreSQL cluster entry and on-disk size when readable. |
+| MSSQL in Docker | Docker container name/image | Identifies MSSQL container candidates; per-database inventory is not solved yet. |
+| Endpoints | nginx / Apache / Caddy config | Names only. The agent does not probe endpoints in Free v1. |
 
-| Area | Linux | macOS |
-|---|---|---|
-| Host (name, OS, kernel, arch, uptime) | ✅ | ✅ (no uptime) |
-| Disk usage | ✅ | ✅ |
-| CPU usage | ✅ | ⬜ stubbed |
-| Memory usage | ✅ | ⬜ stubbed |
-| Network throughput | ✅ | ⬜ stubbed |
-| Containers (Docker) | ✅ | ⬜ planned |
-| Databases (engine, size, status) | ✅ | ⬜ planned |
-| Endpoints (auto-discovered + probed) | ✅ | ⬜ planned |
-| App-groups (components clustered by name) | ✅ | ⬜ planned |
+## Important known gaps
 
-Linux is the primary target and reads directly from `/proc`, `statfs`, the Docker
-socket, and the local web-server config. macOS is supported as a limited fallback
-(host + disk are real; metrics report `0`, discovery is empty, and the platform is
-reported as `darwin (limited)`) — a full Darwin backend is future work.
-
----
-
-## What the agent reads (and why it's safe)
-
-The agent takes **no configuration and no request input**. It discovers
-everything by reading sources already present on the machine, all read-only:
-
-| Snapshot field | Source on the box | Notes |
-|---|---|---|
-| host / cpu / memory / disk / network | `/proc/*`, `statfs`, `uname` | Kernel pseudo-files; rates need two samples. |
-| containers | `GET` on `/var/run/docker.sock` | Read-only Docker API. CPU%/mem from two stats frames. Skipped if Docker is absent or the socket isn't permitted. |
-| databases | process table (`/proc/*/comm`) + on-disk data dirs | Detects PostgreSQL, MySQL/MariaDB, Redis, MongoDB. Size is the data directory's on-disk size. **No connection, no credentials**, so it reports what's visible on disk (per-schema sizes for MySQL/MariaDB; cluster-level size for the others). |
-| endpoints | nginx / Apache / Caddy site config | The agent probes only the hostnames **your own server is already configured to serve** — never an attacker-supplied or arbitrary URL. |
-| groups | synthesized | The discovered containers/databases/endpoints are clustered by a shared name root into "apps". Pure local computation. |
-
-The only outbound traffic the agent originates is the endpoint reachability
-probe, and only ever to hostnames found in this machine's own web-server config.
-Everything else is local reads. There are no shells, no credentials, and no
-writes.
+- Per-database **names and sizes** inside MSSQL containers need a reliable
+  read-only strategy.
+- Per-database PostgreSQL names/sizes also need a reliable strategy beyond
+  cluster-level filesystem sizing.
+- The signed apt repository and package publishing flow still need to be built.
+- Pro relay mode is not implemented in this repo yet.
 
 ---
 
 ## Install
 
-The agent is published to a single channel: an **apt repository for Ubuntu**.
-Add the repository once, then install and upgrade with `apt` like any other
-package. (The repository is hosted as static, signed files on GitHub Pages from
-this same GitHub account — there is no other distribution channel.)
+The supported install path is an **apt repository hosted from our GitHub
+account**, not Ubuntu's central repository. Users explicitly trust our key, add
+our repository, then install with apt.
 
 ```sh
-# add the signing key and repository (one time), then install
-# (exact key URL / repo URL are filled in when the repo goes live)
+# placeholder until the repo goes live
+curl -fsSL https://andioliverion.github.io/meerkat-agent/apt/key.gpg \
+  | sudo gpg --dearmor -o /usr/share/keyrings/meerkat-agent.gpg
+
+# placeholder repo line until packaging is published
+echo "deb [signed-by=/usr/share/keyrings/meerkat-agent.gpg] https://andioliverion.github.io/meerkat-agent/apt stable main" \
+  | sudo tee /etc/apt/sources.list.d/meerkat-agent.list
+
 sudo apt update
 sudo apt install meerkat-agent
 ```
 
-Updates arrive through the normal `sudo apt update && sudo apt upgrade`.
-
-### Build it yourself (open source)
-
-The agent is open source — clone the repo, read every line, and build your own
-binary if you prefer not to trust the published package:
+Updates will arrive through normal apt once the repository exists:
 
 ```sh
-git clone https://github.com/AndiOliverIon/meerkat-agent.git
-cd meerkat-agent
-go build -o bin/meerkat-agent ./cmd/meerkat-agent   # Go 1.23+
+sudo apt update
+sudo apt upgrade
 ```
-
-This is for auditing and self-builds; the supported install path for end users
-is the apt repository above.
 
 ---
 
 ## Usage
 
-```
-meerkat-agent once             collect one snapshot and print JSON
-meerkat-agent serve [--addr]   serve the snapshot over HTTP (default :8765)
-meerkat-agent version          print the agent version
-```
-
-### One-shot (good for testing or cron)
-
 ```sh
-meerkat-agent once
+meerkat-agent once                      collect one snapshot and print JSON
+meerkat-agent serve [--addr][--dir]     serve HTTPS API, default :8765
+meerkat-agent gen-cert [--dir]          generate TLS cert/key if absent
+meerkat-agent gen-token [--dir]         generate bearer token if absent
+meerkat-agent rotate-token [--dir]      replace token and print enrollment
+meerkat-agent fingerprint [--dir]       print TLS cert fingerprint
+meerkat-agent enroll [--dir][--addr]    print app enrollment details
+meerkat-agent version                   print version
 ```
 
-### Serve over HTTP
+### Serve
 
 ```sh
 meerkat-agent serve --addr :8765
 ```
 
-| Method & path | Returns |
-|---|---|
-| `GET /v1/status` | the full snapshot (JSON) |
-| `GET /healthz`   | `{"status":"ok","agent":"<version>"}` |
+| Method & path | Auth | Returns |
+| --- | --- | --- |
+| `GET /healthz` | none | liveness only |
+| `GET /v1/status` | bearer token | full snapshot JSON |
 
-This is the **direct app ⇄ agent** path: the Meerkat app connects to this endpoint
-on your server. Expose it only to networks/devices you trust.
+`/v1/status` is served over HTTPS with the agent's self-signed certificate.
 
-> **Note on rates:** CPU and network are derived from monotonic counters, so they
-> need two samples. The *first* read after start reports `0` for those until a
-> second sample exists. In `serve` mode the collector is long-lived, so subsequent
-> reads are accurate.
+### Enrollment
+
+```sh
+meerkat-agent enroll --addr your.server.example.com:8765
+```
+
+The command prints:
+
+- address
+- certificate fingerprint
+- bearer token
+- one-paste line for the iOS app
+- base64 JSON code for future parser support
+
+If a token is exposed or needs refreshing:
+
+```sh
+sudo meerkat-agent rotate-token
+```
+
+This replaces only the bearer token. The TLS certificate and fingerprint remain
+unchanged, so the app can recover without forcing a full certificate reset.
 
 ---
 
-## The JSON contract
+## JSON contract
 
-`GET /v1/status` (and `once`) return a `Snapshot`:
+`GET /v1/status` returns a `Snapshot`. The canonical source is
+[`internal/model/model.go`](internal/model/model.go).
+
+High-level shape:
 
 ```json
 {
-  "agentVersion": "0.1.0",
-  "collectedAt": "2026-06-13T13:21:26Z",
-  "host":    { "name": "", "os": "", "kernel": "", "arch": "", "platform": "", "uptimeSeconds": 0 },
-  "cpu":     { "used": 0, "total": 100, "unit": "%",  "percent": 0 },
-  "memory":  { "used": 0, "total": 0,   "unit": "GB", "percent": 0 },
-  "disk":    { "used": 0, "total": 0,   "unit": "GB", "percent": 0 },
-  "network": { "interface": "", "rxMbps": 0, "txMbps": 0 },
-  "groups": [], "containers": [], "databases": [], "endpoints": []
+  "agentVersion": "0.0.0-dev",
+  "collectedAt": "2026-06-14T09:00:00Z",
+  "host": { "name": "vps1", "os": "Ubuntu 24.04 LTS", "kernel": "...", "arch": "amd64", "platform": "linux", "uptimeSeconds": 12345 },
+  "cpu": { "used": 12.4, "total": 100, "unit": "%", "percent": 12.4 },
+  "memory": { "used": 1.7, "total": 4.0, "unit": "GB", "percent": 42.5 },
+  "disk": { "used": 18.6, "total": 80.0, "unit": "GB", "percent": 23.3 },
+  "load": { "one": 0.1, "five": 0.2, "fifteen": 0.2 },
+  "containers": [],
+  "databases": [],
+  "endpoints": []
 }
 ```
 
-The field definitions live in [`internal/model/model.go`](internal/model/model.go),
-which is the canonical, commented source of truth for the contract.
+`null` means not obtained. `[]` means obtained and empty.
 
 ---
 
 ## Project layout
 
+```text
+cmd/meerkat-agent/   CLI entrypoint
+internal/model/      JSON contract
+internal/collect/    platform collectors and discovery
+internal/identity/   TLS cert, fingerprint, bearer token
+internal/server/     HTTPS API server
 ```
-cmd/meerkat-agent/   CLI entrypoint (once | serve | version)
-internal/model/      JSON contract (Snapshot, Host, Metric, …)
-internal/collect/    portable collector + per-OS backends (build-tagged)
-  collect.go         portable: samples counters, derives rates, assembles
-  groups.go          portable: clusters discovered components into app-groups
-  sys_linux.go       Linux metrics (host/cpu/mem/disk/net)
-  sys_darwin.go      Darwin metrics (limited fallback)
-  discover_linux.go  Linux discovery (containers/databases/endpoints)
-  discover_darwin.go Darwin discovery stubs
-internal/server/     HTTP server (/v1/status, /healthz)
-```
-
-Per-OS code is selected at compile time with Go build tags (`*_linux.go`,
-`*_darwin.go`), so the binary contains only the backend for its target.
-
----
-
-## Roadmap
-
-- ~~Real resource discovery on Linux (apps, containers, databases, endpoints)~~ ✅ done
-- Package as a signed `.deb` and publish to an apt repository for Ubuntu
-  (the single supported install channel) with a systemd service
-- Optional short-TTL cache for discovery so frequent polls don't re-probe every call
-- Full macOS backend (CPU, memory, network) + macOS discovery (launchd, Docker Desktop)
-
-> Other package formats (RHEL `.rpm`, Alpine `.apk`, Arch, Homebrew) and other
-> install methods are explicitly out of scope for now — Ubuntu via apt is the
-> only published target.
 
 ---
 

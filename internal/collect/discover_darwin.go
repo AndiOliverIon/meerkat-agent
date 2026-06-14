@@ -10,6 +10,6 @@ import "github.com/AndiOliverIon/meerkat-agent/internal/model"
 // slices, since on Darwin we genuinely did not collect this data (vs.
 // "collected, found none").
 
-func readContainers() []model.Container { return nil }
-func readDatabases() []model.Database   { return nil }
-func readEndpoints() []model.Endpoint   { return nil }
+func readContainers() []model.Container                { return nil }
+func readDatabases([]model.Container) []model.Database { return nil }
+func readEndpoints() []model.Endpoint                  { return nil }

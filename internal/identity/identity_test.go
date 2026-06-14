@@ -80,3 +80,40 @@ func TestGenerateTokenIdempotentAndLoadable(t *testing.T) {
 		t.Error("second GenerateToken changed the token")
 	}
 }
+
+func TestRotateTokenChangesOnlyToken(t *testing.T) {
+	dir := t.TempDir()
+	if created, err := GenerateCert(dir); err != nil || !created {
+		t.Fatalf("GenerateCert created=%v err=%v", created, err)
+	}
+	fpBefore, err := Fingerprint(dir)
+	if err != nil {
+		t.Fatalf("Fingerprint before: %v", err)
+	}
+	tokBefore, _, err := GenerateToken(dir)
+	if err != nil {
+		t.Fatalf("GenerateToken: %v", err)
+	}
+
+	tokAfter, err := RotateToken(dir)
+	if err != nil {
+		t.Fatalf("RotateToken: %v", err)
+	}
+	if tokAfter == "" || tokAfter == tokBefore {
+		t.Fatalf("RotateToken did not produce a fresh token: before=%q after=%q", tokBefore, tokAfter)
+	}
+	loaded, err := LoadToken(dir)
+	if err != nil {
+		t.Fatalf("LoadToken after rotate: %v", err)
+	}
+	if loaded != tokAfter {
+		t.Errorf("LoadToken = %q, want rotated token %q", loaded, tokAfter)
+	}
+	fpAfter, err := Fingerprint(dir)
+	if err != nil {
+		t.Fatalf("Fingerprint after: %v", err)
+	}
+	if fpAfter != fpBefore {
+		t.Error("RotateToken changed the certificate fingerprint")
+	}
+}
