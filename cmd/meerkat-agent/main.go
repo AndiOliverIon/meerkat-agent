@@ -7,6 +7,7 @@
 //	meerkat-agent gen-cert [--dir]    generate the TLS cert/key if absent (install)
 //	meerkat-agent gen-token [--dir]   generate the bearer token if absent (install)
 //	meerkat-agent rotate-token [--dir][--addr] replace token and print enrollment
+//	meerkat-agent rotate-cert [--dir][--addr] replace TLS cert/key and print enrollment
 //	meerkat-agent fingerprint [--dir] print the TLS cert fingerprint
 //	meerkat-agent enroll [--dir][--addr] print the app enrollment details
 //	meerkat-agent version             print the agent version
@@ -85,6 +86,20 @@ func main() {
 		if err := printEnrollment(*dir, *addr); err != nil {
 			fatal("rotate-token:", err)
 		}
+
+	case "rotate-cert":
+		fs := flag.NewFlagSet("rotate-cert", flag.ExitOnError)
+		dir := fs.String("dir", identity.DefaultDir, "identity dir (cert/key/token)")
+		addr := fs.String("addr", "", "public address the app should use (host:port or https://host:port)")
+		_ = fs.Parse(os.Args[2:])
+		if err := identity.RotateCert(*dir); err != nil {
+			fatal("rotate-cert:", err)
+		}
+		if err := printEnrollment(*dir, *addr); err != nil {
+			fatal("rotate-cert:", err)
+		}
+		fmt.Fprintln(os.Stderr, "\nRestart meerkat-agent for the new certificate to be served:")
+		fmt.Fprintln(os.Stderr, "  sudo systemctl restart meerkat-agent")
 
 	case "fingerprint":
 		dir := dirFlag("fingerprint")
@@ -184,6 +199,7 @@ usage:
   meerkat-agent gen-cert [--dir]     generate the TLS cert/key if absent (install hook)
   meerkat-agent gen-token [--dir]    generate the bearer token if absent (install hook)
   meerkat-agent rotate-token [--dir][--addr] replace token and print enrollment details
+  meerkat-agent rotate-cert [--dir][--addr] replace TLS cert/key and print enrollment details
   meerkat-agent fingerprint [--dir]  print the TLS cert fingerprint
   meerkat-agent enroll [--dir][--addr] print the app enrollment details
   meerkat-agent version              print version`)

@@ -34,6 +34,8 @@ const (
 	certFile  = "cert.pem"
 	keyFile   = "key.pem"
 	tokenFile = "token"
+
+	certValidity = 397 * 24 * time.Hour
 )
 
 // CertPath, KeyPath, TokenPath return the on-disk locations within dir.
@@ -52,14 +54,31 @@ func GenerateCert(dir string) (created bool, err error) {
 		return false, nil
 	}
 
+	if err := writeNewCert(dir); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// RotateCert replaces the TLS certificate and private key while leaving the
+// bearer token untouched. The long-running server loads certs at startup, so
+// callers should restart the service after a successful rotation.
+func RotateCert(dir string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return writeNewCert(dir)
+}
+
+func writeNewCert(dir string) error {
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return false, err
+		return err
 	}
 
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
-		return false, err
+		return err
 	}
 
 	host, _ := os.Hostname()
@@ -71,7 +90,7 @@ func GenerateCert(dir string) (created bool, err error) {
 		SerialNumber:          serial,
 		Subject:               pkix.Name{CommonName: host},
 		NotBefore:             now.Add(-time.Hour),
-		NotAfter:              now.AddDate(10, 0, 0), // ~10y; self-signed + pinned, no CA renewal
+		NotAfter:              now.Add(certValidity),
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
@@ -81,22 +100,22 @@ func GenerateCert(dir string) (created bool, err error) {
 
 	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &priv.PublicKey, priv)
 	if err != nil {
-		return false, err
+		return err
 	}
 
 	// Write cert (0644) and key (0600). Write key first under a temp name and
 	// rename so it never exists world-readable mid-write.
-	if err := writeFile(CertPath(dir), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644); err != nil {
-		return false, err
+	if err := writeFilePreserveOwner(CertPath(dir), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644); err != nil {
+		return err
 	}
 	keyDER, err := x509.MarshalECPrivateKey(priv)
 	if err != nil {
-		return false, err
+		return err
 	}
-	if err := writeFile(KeyPath(dir), pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
-		return false, err
+	if err := writeFilePreserveOwner(KeyPath(dir), pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
+		return err
 	}
-	return true, nil
+	return nil
 }
 
 // GenerateToken creates a high-entropy bearer token in dir if one does not

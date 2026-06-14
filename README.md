@@ -102,6 +102,7 @@ meerkat-agent serve [--addr][--dir]     serve HTTPS API, default :8765
 meerkat-agent gen-cert [--dir]          generate TLS cert/key if absent
 meerkat-agent gen-token [--dir]         generate bearer token if absent
 meerkat-agent rotate-token [--dir]      replace token and print enrollment
+meerkat-agent rotate-cert [--dir]       replace TLS cert/key and print enrollment
 meerkat-agent fingerprint [--dir]       print TLS cert fingerprint
 meerkat-agent enroll [--dir][--addr]    print app enrollment details
 meerkat-agent version                   print version
@@ -144,6 +145,17 @@ This replaces only the bearer token. The TLS certificate and fingerprint remain
 unchanged, so the app can recover without forcing a full certificate reset.
 The running service reloads the token from disk during authentication, so old
 tokens are rejected immediately after rotation without restarting the service.
+
+If the TLS certificate itself must be replaced:
+
+```sh
+sudo meerkat-agent rotate-cert --addr your.server.example.com:8765
+sudo systemctl restart meerkat-agent
+```
+
+This keeps the bearer token, creates a fresh Apple-compliant self-signed
+certificate, prints a new enrollment string, and changes the certificate
+fingerprint the app must trust.
 
 ---
 

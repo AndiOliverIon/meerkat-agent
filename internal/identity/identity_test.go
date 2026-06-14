@@ -2,10 +2,13 @@ package identity
 
 import (
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"os"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestGenerateCertIsUsableAndIdempotent(t *testing.T) {
@@ -22,6 +25,10 @@ func TestGenerateCertIsUsableAndIdempotent(t *testing.T) {
 	// The cert+key must load as a usable TLS keypair.
 	if _, err := tls.LoadX509KeyPair(CertPath(dir), KeyPath(dir)); err != nil {
 		t.Fatalf("generated cert/key is not a valid TLS pair: %v", err)
+	}
+	cert := loadCert(t, dir)
+	if validity := cert.NotAfter.Sub(cert.NotBefore); validity > 398*24*time.Hour {
+		t.Fatalf("cert validity = %s, want <= 398 days for Apple TLS compliance", validity)
 	}
 
 	// Private key must not be world-readable.
@@ -48,6 +55,43 @@ func TestGenerateCertIsUsableAndIdempotent(t *testing.T) {
 	}
 	if !strings.Contains(fp, ":") || len(fp) < 32 {
 		t.Errorf("fingerprint looks wrong: %q", fp)
+	}
+}
+
+func TestRotateCertChangesOnlyCertificate(t *testing.T) {
+	dir := t.TempDir()
+	if created, err := GenerateCert(dir); err != nil || !created {
+		t.Fatalf("GenerateCert created=%v err=%v", created, err)
+	}
+	fpBefore, err := Fingerprint(dir)
+	if err != nil {
+		t.Fatalf("Fingerprint before: %v", err)
+	}
+	tokBefore, _, err := GenerateToken(dir)
+	if err != nil {
+		t.Fatalf("GenerateToken: %v", err)
+	}
+
+	if err := RotateCert(dir); err != nil {
+		t.Fatalf("RotateCert: %v", err)
+	}
+
+	fpAfter, err := Fingerprint(dir)
+	if err != nil {
+		t.Fatalf("Fingerprint after: %v", err)
+	}
+	if fpAfter == fpBefore {
+		t.Fatal("RotateCert did not change certificate fingerprint")
+	}
+	tokAfter, err := LoadToken(dir)
+	if err != nil {
+		t.Fatalf("LoadToken after rotate cert: %v", err)
+	}
+	if tokAfter != tokBefore {
+		t.Fatal("RotateCert changed bearer token")
+	}
+	if _, err := tls.LoadX509KeyPair(CertPath(dir), KeyPath(dir)); err != nil {
+		t.Fatalf("rotated cert/key is not a valid TLS pair: %v", err)
 	}
 }
 
@@ -150,4 +194,21 @@ func TestRotateTokenPreservesModeAndOwner(t *testing.T) {
 	if afterStat.Uid != beforeStat.Uid || afterStat.Gid != beforeStat.Gid {
 		t.Fatalf("token owner changed from %d:%d to %d:%d", beforeStat.Uid, beforeStat.Gid, afterStat.Uid, afterStat.Gid)
 	}
+}
+
+func loadCert(t *testing.T, dir string) *x509.Certificate {
+	t.Helper()
+	data, err := os.ReadFile(CertPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, _ := pem.Decode(data)
+	if block == nil {
+		t.Fatal("cert.pem is not PEM")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cert
 }
