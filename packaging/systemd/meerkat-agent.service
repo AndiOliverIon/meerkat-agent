@@ -1,0 +1,21 @@
+[Unit]
+Description=Meerkat Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=meerkat-agent
+Group=meerkat-agent
+WorkingDirectory=/var/lib/meerkat-agent
+ExecStart=/usr/bin/meerkat-agent serve --addr :8765 --dir /var/lib/meerkat-agent
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/meerkat-agent
+
+[Install]
+WantedBy=multi-user.target

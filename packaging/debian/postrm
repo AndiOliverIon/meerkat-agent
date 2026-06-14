@@ -1,0 +1,15 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "purge" ]; then
+  rm -rf /var/lib/meerkat-agent
+  if getent passwd meerkat-agent >/dev/null; then
+    deluser --quiet meerkat-agent || true
+  fi
+fi
+
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl daemon-reload || true
+fi
+
+exit 0

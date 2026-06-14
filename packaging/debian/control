@@ -1,0 +1,11 @@
+Package: meerkat-agent
+Version: ${VERSION}
+Section: admin
+Priority: optional
+Architecture: ${ARCH}
+Maintainer: Meerkat <meerkat@tnisoft.ro>
+Depends: adduser, ca-certificates, systemd
+Description: Direct monitoring agent for the Meerkat iOS app
+ Meerkat Agent is a small read-only HTTPS agent installed on a VPS you own.
+ It exposes system metrics and supported discovered resources for the Meerkat
+ iOS app in Free/direct mode.
