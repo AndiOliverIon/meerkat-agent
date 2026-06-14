@@ -8,11 +8,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
 
 const mssqlFile = "mssql-inventory.json"
+const maxMSSQLInventories = 25
+
+var mssqlInventoryMu sync.Mutex
 
 type MSSQLInventory struct {
 	Container string    `json:"container"`
@@ -47,6 +51,9 @@ func LoadMSSQLInventories(dir string) ([]MSSQLInventory, error) {
 }
 
 func SaveMSSQLInventory(dir string, next MSSQLInventory) error {
+	mssqlInventoryMu.Lock()
+	defer mssqlInventoryMu.Unlock()
+
 	next.Container = strings.TrimSpace(next.Container)
 	next.Username = strings.TrimSpace(next.Username)
 	if next.Container == "" {
@@ -73,6 +80,9 @@ func SaveMSSQLInventory(dir string, next MSSQLInventory) error {
 		}
 	}
 	if !replaced {
+		if len(configs) >= maxMSSQLInventories {
+			return errors.New("too many MSSQL inventory entries")
+		}
 		configs = append(configs, next)
 	}
 

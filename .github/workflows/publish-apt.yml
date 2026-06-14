@@ -100,14 +100,17 @@ jobs:
           KEY_ID="$(gpg --batch --list-secret-keys --with-colons | awk -F: '/^sec:/ {print $5; exit}')"
           gpg --batch --yes --armor --export "$KEY_ID" > public/apt/key.gpg
 
-          SIGN_ARGS=""
+          SIGN_ARGS=()
           if [ -n "${APT_GPG_PASSPHRASE:-}" ]; then
-            SIGN_ARGS="--pinentry-mode loopback --passphrase $APT_GPG_PASSPHRASE"
+            PASSPHRASE_FILE="$RUNNER_TEMP/gpg-passphrase"
+            printf '%s' "$APT_GPG_PASSPHRASE" > "$PASSPHRASE_FILE"
+            chmod 600 "$PASSPHRASE_FILE"
+            SIGN_ARGS=(--pinentry-mode loopback --passphrase-file "$PASSPHRASE_FILE")
           fi
 
           cd public/apt/dists/stable
-          gpg --batch --yes $SIGN_ARGS --local-user "$KEY_ID" --armor --detach-sign -o Release.gpg Release
-          gpg --batch --yes $SIGN_ARGS --local-user "$KEY_ID" --clearsign -o InRelease Release
+          gpg --batch --yes "${SIGN_ARGS[@]}" --local-user "$KEY_ID" --armor --detach-sign -o Release.gpg Release
+          gpg --batch --yes "${SIGN_ARGS[@]}" --local-user "$KEY_ID" --clearsign -o InRelease Release
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

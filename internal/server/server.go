@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -24,6 +25,8 @@ type Server struct {
 	certFile    string
 	keyFile     string
 }
+
+var validContainerName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 
 // New builds a Server bound to addr (e.g. ":8765"), loading the TLS cert and
 // bearer token from the identity dir. It returns an error if the token can't be
@@ -61,6 +64,9 @@ func (s *Server) Run() error {
 		Addr:              s.addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 	log.Printf("meerkat-agent listening (https) on %s (GET /v1/status, /healthz)", s.addr)
 	return srv.ListenAndServeTLS(s.certFile, s.keyFile)
@@ -100,17 +106,9 @@ func (s *Server) handleMSSQLConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	saved, _ := agentconfig.LoadMSSQLInventories(s.identityDir)
-	var summary agentconfig.MSSQLInventorySummary
-	for _, item := range saved {
-		if item.Container == req.Container {
-			summary = agentconfig.SummarizeMSSQLInventory(item)
-			break
-		}
-	}
 	writeJSON(w, map[string]any{
 		"status":    "configured",
-		"config":    summary,
+		"config":    agentconfig.SummarizeMSSQLInventory(cfg),
 		"databases": databases,
 	})
 }
@@ -118,6 +116,9 @@ func (s *Server) handleMSSQLConfig(w http.ResponseWriter, r *http.Request) {
 func validateMSSQLConfigRequest(container, username, password string) error {
 	if container == "" {
 		return errors.New("container is required")
+	}
+	if !validContainerName.MatchString(container) {
+		return errors.New("container name contains invalid characters")
 	}
 	if username == "" {
 		return errors.New("username is required")
@@ -158,10 +159,12 @@ func bearer(header string) string {
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(v); err != nil {
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
+	data = append(data, '\n')
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(data)
 }

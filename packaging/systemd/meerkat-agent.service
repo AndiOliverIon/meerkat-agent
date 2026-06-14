@@ -12,9 +12,17 @@ ExecStart=/usr/bin/meerkat-agent serve --addr :8765 --dir /var/lib/meerkat-agent
 Restart=on-failure
 RestartSec=5s
 NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=full
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictNamespaces=true
 ReadWritePaths=/var/lib/meerkat-agent
 
 [Install]

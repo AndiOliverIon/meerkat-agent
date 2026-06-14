@@ -19,6 +19,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -36,12 +37,31 @@ import (
 // ---------------------------------------------------------------------------
 
 const dockerSocket = "/var/run/docker.sock"
+const dockerInspectConcurrency = 8
+const dockerHTTPTimeout = 4 * time.Second
+const dockerExecStartTimeout = 8 * time.Second
+const dockerExecOutputLimit = 1 << 20
+const dirSizeCacheTTL = 60 * time.Second
+
+var dirSizeCache = struct {
+	sync.Mutex
+	values map[string]dirSizeCacheEntry
+}{values: map[string]dirSizeCacheEntry{}}
+
+type dirSizeCacheEntry struct {
+	at    time.Time
+	value *float64
+}
 
 // dockerHTTP returns an http.Client that speaks to the Docker socket. The host
 // part of the URL is irrelevant; the dialer always connects to the socket.
 func dockerHTTP() *http.Client {
+	return dockerHTTPWithTimeout(dockerHTTPTimeout)
+}
+
+func dockerHTTPWithTimeout(timeout time.Duration) *http.Client {
 	return &http.Client{
-		Timeout: 4 * time.Second,
+		Timeout: timeout,
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				return (&net.Dialer{Timeout: 2 * time.Second}).DialContext(ctx, "unix", dockerSocket)
@@ -82,6 +102,7 @@ func readContainers() []model.Container {
 
 	out := make([]model.Container, len(raw))
 	var wg sync.WaitGroup
+	sem := make(chan struct{}, dockerInspectConcurrency)
 	for i, c := range raw {
 		name := ""
 		if len(c.Names) > 0 {
@@ -94,9 +115,11 @@ func readContainers() []model.Container {
 			Ports:     formatDockerPorts(c.Ports),
 			CreatedAt: unixTimePtr(c.Created),
 		}
+		sem <- struct{}{}
 		wg.Add(1)
 		go func(idx int, id string) {
 			defer wg.Done()
+			defer func() { <-sem }()
 			mergeContainerInspect(client, id, &out[idx])
 		}(i, c.ID)
 	}
@@ -333,7 +356,7 @@ func mssqlContainerPlaceholder(c model.Container) model.Database {
 
 func readMSSQLContainerDatabases(container, username, password string) ([]model.Database, error) {
 	output, err := dockerExec(container, []string{
-		"sh", "-lc", mssqlSQLCmdShell(username),
+		"sh", "-c", mssqlSQLCmdShell(username),
 	}, []string{"SQLCMDPASSWORD=" + password})
 	if err != nil {
 		return nil, err
@@ -399,7 +422,8 @@ func dockerExec(container string, cmd []string, env []string) ([]byte, error) {
 		"Env":          env,
 	}
 	payload, _ := json.Marshal(body)
-	resp, err := client.Post("http://docker/v1.41/containers/"+container+"/exec", "application/json", bytes.NewReader(payload))
+	escapedContainer := url.PathEscape(container)
+	resp, err := client.Post("http://docker/v1.41/containers/"+escapedContainer+"/exec", "application/json", bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
@@ -418,7 +442,8 @@ func dockerExec(container string, cmd []string, env []string) ([]byte, error) {
 	}
 
 	startPayload := []byte(`{"Detach":false,"Tty":false}`)
-	startResp, err := client.Post("http://docker/v1.41/exec/"+created.ID+"/start", "application/json", bytes.NewReader(startPayload))
+	startClient := dockerHTTPWithTimeout(dockerExecStartTimeout)
+	startResp, err := startClient.Post("http://docker/v1.41/exec/"+created.ID+"/start", "application/json", bytes.NewReader(startPayload))
 	if err != nil {
 		return nil, err
 	}
@@ -426,7 +451,7 @@ func dockerExec(container string, cmd []string, env []string) ([]byte, error) {
 	if startResp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("docker exec start failed: %s", startResp.Status)
 	}
-	raw, err := io.ReadAll(startResp.Body)
+	raw, err := io.ReadAll(io.LimitReader(startResp.Body, dockerExecOutputLimit))
 	if err != nil {
 		return nil, err
 	}
@@ -434,11 +459,18 @@ func dockerExec(container string, cmd []string, env []string) ([]byte, error) {
 }
 
 func dockerDemux(raw []byte) []byte {
+	original := raw
 	var out bytes.Buffer
 	for len(raw) >= 8 {
+		if (raw[0] != 1 && raw[0] != 2) || raw[1] != 0 || raw[2] != 0 || raw[3] != 0 {
+			if out.Len() == 0 {
+				return original
+			}
+			break
+		}
 		size := int(binary.BigEndian.Uint32(raw[4:8]))
 		raw = raw[8:]
-		if size < 0 || size > len(raw) {
+		if size <= 0 || size > len(raw) {
 			break
 		}
 		out.Write(raw[:size])
@@ -447,7 +479,7 @@ func dockerDemux(raw []byte) []byte {
 	if out.Len() > 0 {
 		return out.Bytes()
 	}
-	return raw
+	return original
 }
 
 func shellQuote(s string) string {
@@ -498,6 +530,15 @@ func firstExistingDir(paths []string) string {
 // rounded, or nil if root itself can't be accessed (e.g. permission
 // denied). Individual unreadable entries deeper in the tree are skipped.
 func dirSizeGB(root string) *float64 {
+	now := time.Now()
+	dirSizeCache.Lock()
+	if cached, ok := dirSizeCache.values[root]; ok && now.Sub(cached.at) < dirSizeCacheTTL {
+		value := cloneFloat64(cached.value)
+		dirSizeCache.Unlock()
+		return value
+	}
+	dirSizeCache.Unlock()
+
 	if _, err := os.Stat(root); err != nil {
 		return nil // can't even reach the data dir -> not obtained
 	}
@@ -519,7 +560,19 @@ func dirSizeGB(root string) *float64 {
 	if !accessible {
 		return nil // couldn't read anything under root
 	}
-	return f64ptr(round1(float64(total) / 1e9))
+	size := f64ptr(round1(float64(total) / 1e9))
+	dirSizeCache.Lock()
+	dirSizeCache.values[root] = dirSizeCacheEntry{at: now, value: cloneFloat64(size)}
+	dirSizeCache.Unlock()
+	return size
+}
+
+func cloneFloat64(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
 }
 
 // ---------------------------------------------------------------------------
@@ -531,14 +584,14 @@ func dirSizeGB(root string) *float64 {
 const maxEndpoints = 25
 
 func readEndpoints() []model.Endpoint {
-	hosts := discoverHostnames()
+	hosts, sources := discoverHostnames()
 	if len(hosts) == 0 {
 		return []model.Endpoint{}
 	}
 
 	out := make([]model.Endpoint, len(hosts))
 	for i, h := range hosts {
-		source := endpointSources[h]
+		source := sources[h]
 		out[i] = model.Endpoint{Name: h, Source: strptr(source)}
 	}
 
@@ -546,26 +599,24 @@ func readEndpoints() []model.Endpoint {
 	return out
 }
 
-var endpointSources = map[string]string{}
-
 // discoverHostnames reads nginx, Apache, and Caddy config to collect the
 // hostnames this server is configured to serve.
-func discoverHostnames() []string {
+func discoverHostnames() ([]string, map[string]string) {
 	set := map[string]bool{}
-	endpointSources = map[string]string{}
+	sources := map[string]string{}
 
 	for _, dir := range []string{"/etc/nginx/sites-enabled", "/etc/nginx/conf.d"} {
 		for _, f := range listFiles(dir) {
-			scanDirective(f, "server_name", "nginx", set)
+			scanDirective(f, "server_name", "nginx", set, sources)
 		}
 	}
 	for _, dir := range []string{"/etc/apache2/sites-enabled", "/etc/httpd/conf.d"} {
 		for _, f := range listFiles(dir) {
-			scanDirective(f, "servername", "apache", set)
-			scanDirective(f, "serveralias", "apache", set)
+			scanDirective(f, "servername", "apache", set, sources)
+			scanDirective(f, "serveralias", "apache", set, sources)
 		}
 	}
-	scanCaddyfile("/etc/caddy/Caddyfile", set)
+	scanCaddyfile("/etc/caddy/Caddyfile", set, sources)
 
 	var out []string
 	for h := range set {
@@ -577,7 +628,7 @@ func discoverHostnames() []string {
 	if len(out) > maxEndpoints {
 		out = out[:maxEndpoints]
 	}
-	return out
+	return out, sources
 }
 
 func listFiles(dir string) []string {
@@ -594,7 +645,7 @@ func listFiles(dir string) []string {
 
 // scanDirective collects the arguments of a config directive (e.g. nginx
 // "server_name a.com b.com;" or Apache "ServerName a.com") from a file.
-func scanDirective(path, directive, source string, set map[string]bool) {
+func scanDirective(path, directive, source string, set map[string]bool, sources map[string]string) {
 	f, err := os.Open(path)
 	if err != nil {
 		return
@@ -617,14 +668,14 @@ func scanDirective(path, directive, source string, set map[string]bool) {
 				continue
 			}
 			set[strings.ToLower(tok)] = true
-			endpointSources[strings.ToLower(tok)] = source
+			sources[strings.ToLower(tok)] = source
 		}
 	}
 }
 
 // scanCaddyfile collects site addresses from a Caddyfile (lines that open a
 // site block, e.g. "example.com, www.example.com {").
-func scanCaddyfile(path string, set map[string]bool) {
+func scanCaddyfile(path string, set map[string]bool, sources map[string]string) {
 	f, err := os.Open(path)
 	if err != nil {
 		return
@@ -649,7 +700,7 @@ func scanCaddyfile(path string, set map[string]bool) {
 				continue
 			}
 			set[strings.ToLower(tok)] = true
-			endpointSources[strings.ToLower(tok)] = "caddy"
+			sources[strings.ToLower(tok)] = "caddy"
 		}
 	}
 }
