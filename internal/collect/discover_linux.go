@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	agentconfig "github.com/AndiOliverIon/meerkat-agent/internal/config"
@@ -316,11 +317,16 @@ func readDatabases(stateDir string, containers []model.Container) []model.Databa
 	mssqlConfigs := loadMSSQLConfigMap(stateDir)
 	for _, c := range containers {
 		if isMSSQLContainer(c) {
+			fileDBs := readMSSQLFileDatabases(c.Name)
 			if cfg, ok := mssqlConfigs[c.Name]; ok {
 				if dbs, err := readMSSQLContainerDatabases(c.Name, cfg.Username, cfg.Password); err == nil {
-					out = append(out, dbs...)
+					out = append(out, mergeMSSQLDatabaseInventory(dbs, fileDBs)...)
 					continue
 				}
+			}
+			if len(fileDBs) > 0 {
+				out = append(out, fileDBs...)
+				continue
 			}
 			out = append(out, mssqlContainerPlaceholder(c))
 		}
@@ -352,6 +358,139 @@ func mssqlContainerPlaceholder(c model.Container) model.Database {
 		SizeGB: nil,
 		Status: c.State,
 	}
+}
+
+type dockerMount struct {
+	Type        string `json:"Type"`
+	Source      string `json:"Source"`
+	Destination string `json:"Destination"`
+}
+
+func readMSSQLFileDatabases(container string) []model.Database {
+	var out []model.Database
+	for _, dir := range mssqlDataDirs(container) {
+		out = append(out, scanMSSQLDataDir(dir)...)
+	}
+	return out
+}
+
+func mssqlDataDirs(container string) []string {
+	client := dockerHTTP()
+	escapedContainer := url.PathEscape(container)
+	resp, err := client.Get("http://docker/v1.41/containers/" + escapedContainer + "/json")
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+
+	var raw struct {
+		Mounts []dockerMount `json:"Mounts"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return nil
+	}
+
+	var dirs []string
+	for _, m := range raw.Mounts {
+		if m.Source == "" {
+			continue
+		}
+		if filepath.Clean(m.Destination) == "/var/opt/mssql/data" {
+			dirs = append(dirs, m.Source)
+		}
+	}
+	sort.Strings(dirs)
+	return dirs
+}
+
+func scanMSSQLDataDir(root string) []model.Database {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+
+	sizes := map[string]int64{}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(entry.Name()))
+		if ext != ".mdf" && ext != ".ndf" && ext != ".ldf" {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		name := mssqlDatabaseNameFromFile(entry.Name())
+		if name == "" {
+			continue
+		}
+		sizes[name] += fileDiskBytes(info)
+	}
+
+	out := make([]model.Database, 0, len(sizes))
+	for name, bytes := range sizes {
+		size := round1(float64(bytes) / 1e9)
+		out = append(out, model.Database{
+			Name:   name,
+			Engine: "MSSQL",
+			SizeGB: &size,
+			Status: "detected",
+		})
+	}
+	sort.Slice(out, func(a, b int) bool { return out[a].Name < out[b].Name })
+	return out
+}
+
+func mssqlDatabaseNameFromFile(filename string) string {
+	ext := strings.ToLower(filepath.Ext(filename))
+	stem := strings.TrimSuffix(filename, filepath.Ext(filename))
+	lower := strings.ToLower(stem)
+
+	switch lower {
+	case "mastlog":
+		return "master"
+	case "modellog":
+		return "model"
+	case "msdblog", "msdbdata":
+		return "msdb"
+	case "templog":
+		return "tempdb"
+	}
+
+	if ext == ".ldf" && strings.HasSuffix(lower, "_log") {
+		return stem[:len(stem)-len("_log")]
+	}
+	return stem
+}
+
+func fileDiskBytes(info fs.FileInfo) int64 {
+	if st, ok := info.Sys().(*syscall.Stat_t); ok && st.Blocks > 0 {
+		return st.Blocks * 512
+	}
+	return info.Size()
+}
+
+func mergeMSSQLDatabaseInventory(primary, fallback []model.Database) []model.Database {
+	if len(fallback) == 0 {
+		return primary
+	}
+	seen := make(map[string]bool, len(primary))
+	for _, db := range primary {
+		seen[strings.ToLower(db.Name)] = true
+	}
+	out := append([]model.Database{}, primary...)
+	for _, db := range fallback {
+		if !seen[strings.ToLower(db.Name)] {
+			out = append(out, db)
+		}
+	}
+	sort.Slice(out, func(a, b int) bool { return out[a].Name < out[b].Name })
+	return out
 }
 
 func readMSSQLContainerDatabases(container, username, password string) ([]model.Database, error) {

@@ -112,19 +112,20 @@ func readMem() (usedGB, totalGB float64, ok bool) {
 	return usedGB, totalGB, true
 }
 
-// readDisk returns used and total space in GB for the filesystem at path. ok is
-// false if statfs fails.
-func readDisk(path string) (usedGB, totalGB float64, ok bool) {
+// readDisk returns df-style used space, total space, and use percent for the
+// filesystem at path. ok is false if statfs fails.
+func readDisk(path string) (usedGB, totalGB, percent float64, ok bool) {
 	var st syscall.Statfs_t
 	if err := syscall.Statfs(path, &st); err != nil {
-		return 0, 0, false
+		return 0, 0, 0, false
 	}
-	bs := float64(st.Bsize)
-	total := float64(st.Blocks) * bs
-	free := float64(st.Bavail) * bs
-	totalGB = total / 1e9
-	usedGB = (total - free) / 1e9
-	return usedGB, totalGB, true
+	usedGB, totalGB, percent = diskUsageFromStatfs(
+		float64(st.Blocks),
+		float64(st.Bfree),
+		float64(st.Bavail),
+		float64(st.Bsize),
+	)
+	return usedGB, totalGB, percent, true
 }
 
 // readLoad returns the 1/5/15 minute load averages from /proc/loadavg.

@@ -94,8 +94,8 @@ func (c *Collector) sampleCore() model.Snapshot {
 		memory = metric(used, total, "GB")
 	}
 	var disk *model.Metric
-	if used, total, ok := readDisk("/"); ok {
-		disk = metric(used, total, "GB")
+	if used, total, percent, ok := readDisk("/"); ok {
+		disk = metricWithPercent(used, total, "GB", percent)
 	}
 	var load *model.Load
 	if one, five, fifteen, ok := readLoad(); ok {
@@ -131,7 +131,27 @@ func metric(used, total float64, unit string) *model.Metric {
 	if unit == "%" { // CPU: used already is the percentage
 		pct = used
 	}
+	return metricWithPercent(used, total, unit, pct)
+}
+
+func metricWithPercent(used, total float64, unit string, pct float64) *model.Metric {
 	return &model.Metric{Used: round1(used), Total: round1(total), Unit: unit, Percent: round1(pct)}
+}
+
+func diskUsageFromStatfs(blocks, bfree, bavail, blockSize float64) (usedGB, totalGB, percent float64) {
+	if blocks <= 0 || blockSize <= 0 {
+		return 0, 0, 0
+	}
+	total := blocks * blockSize
+	used := (blocks - bfree) * blockSize
+	available := bavail * blockSize
+
+	totalGB = total / 1e9
+	usedGB = used / 1e9
+	if used+available > 0 {
+		percent = 100 * used / (used + available)
+	}
+	return usedGB, totalGB, percent
 }
 
 func round1(v float64) float64 {

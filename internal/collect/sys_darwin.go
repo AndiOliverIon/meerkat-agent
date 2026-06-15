@@ -34,15 +34,18 @@ func readHost() model.Host {
 func readMem() (usedGB, totalGB float64, ok bool) { return 0, 0, false }
 
 // readDisk is real on Darwin via statfs.
-func readDisk(path string) (usedGB, totalGB float64, ok bool) {
+func readDisk(path string) (usedGB, totalGB, percent float64, ok bool) {
 	var st syscall.Statfs_t
 	if err := syscall.Statfs(path, &st); err != nil {
-		return 0, 0, false
+		return 0, 0, 0, false
 	}
-	bs := float64(st.Bsize)
-	total := float64(st.Blocks) * bs
-	free := float64(st.Bavail) * bs
-	return (total - free) / 1e9, total / 1e9, true
+	usedGB, totalGB, percent = diskUsageFromStatfs(
+		float64(st.Blocks),
+		float64(st.Bfree),
+		float64(st.Bavail),
+		float64(st.Bsize),
+	)
+	return usedGB, totalGB, percent, true
 }
 
 // CPU and load sampling are not yet implemented on Darwin.
