@@ -50,17 +50,15 @@ GitHub Actions secrets.
 | --- | --- | --- |
 | Host | hostname, OS files, kernel, arch, uptime | Always included where possible. |
 | System metrics | `/proc`, `statfs`, `/proc/loadavg` | CPU, memory, disk, and load average. |
-| Docker containers | Docker API over `/var/run/docker.sock` | State, health, restart count, ports, timestamps, exit code, OOM flag, error text. |
-| PostgreSQL | process table + known data dirs | Reports a PostgreSQL cluster entry and on-disk size when readable. |
-| MSSQL in Docker | Docker container name/image | Identifies MSSQL container candidates; per-database inventory is not solved yet. |
+| Docker containers | Docker API over `/var/run/docker.sock` | State, health, restart count, ports, timestamps, exit code, OOM flag, error text. Unknown lifecycle values are `null`, not fake zeroes. |
+| PostgreSQL | local `psql` when available, plus known data dirs | Reports per-database names/sizes when local read-only access works; otherwise reports readable cluster evidence. |
+| MSSQL in Docker | Docker metadata + mounted data files + optional SQL credentials | Reports mounted database files when readable; optional read-only SQL credentials can improve inventory. |
 | Endpoints | nginx / Apache / Caddy config | Names only. The agent does not probe endpoints in Free v1. |
 
 ## Important known gaps
 
-- Per-database **names and sizes** inside MSSQL containers need a reliable
-  read-only strategy.
-- Per-database PostgreSQL names/sizes also need a reliable strategy beyond
-  cluster-level filesystem sizing.
+- PostgreSQL per-database names/sizes depend on local `psql` access. Without
+  that, the agent reports only readable cluster evidence.
 - The permanent apt signing key must be generated and backed up before public
   release. See [`docs/apt-signing-key.md`](docs/apt-signing-key.md).
 - Pro relay mode is not implemented in this repo yet.

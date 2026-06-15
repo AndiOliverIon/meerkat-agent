@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -152,6 +153,7 @@ func mergeContainerInspect(client *http.Client, id string, c *model.Container) {
 		RestartCount int    `json:"RestartCount"`
 		State        struct {
 			Status     string `json:"Status"`
+			Running    bool   `json:"Running"`
 			OOMKilled  bool   `json:"OOMKilled"`
 			Dead       bool   `json:"Dead"`
 			ExitCode   int    `json:"ExitCode"`
@@ -180,8 +182,12 @@ func mergeContainerInspect(client *http.Client, id string, c *model.Container) {
 		c.Health = strptr(raw.State.Health.Status)
 	}
 	c.RestartCount = intptr(raw.RestartCount)
-	c.OOMKilled = boolptr(raw.State.OOMKilled)
-	c.ExitCode = intptr(raw.State.ExitCode)
+	if !raw.State.Running || raw.State.OOMKilled {
+		c.OOMKilled = boolptr(raw.State.OOMKilled)
+	}
+	if !raw.State.Running {
+		c.ExitCode = intptr(raw.State.ExitCode)
+	}
 	if raw.State.Error != "" {
 		c.Error = strptr(raw.State.Error)
 	}
@@ -285,33 +291,9 @@ func readDatabases(stateDir string, containers []model.Container) []model.Databa
 	var out []model.Database
 
 	for _, db := range knownDBs {
-		running := false
-		for _, p := range db.procs {
-			if procs[p] {
-				running = true
-				break
-			}
+		if db.engine == "PostgreSQL" {
+			out = append(out, readPostgreSQLDatabases(db, procs)...)
 		}
-		dataDir := firstExistingDir(db.dataDirs)
-		if !running && dataDir == "" {
-			continue // engine neither running nor installed
-		}
-
-		status := "stopped"
-		if running {
-			status = "running"
-		}
-
-		var size *float64
-		if dataDir != "" {
-			size = dirSizeGB(dataDir)
-		}
-		out = append(out, model.Database{
-			Name:   "PostgreSQL cluster",
-			Engine: db.engine,
-			SizeGB: size,
-			Status: status,
-		})
 	}
 
 	mssqlConfigs := loadMSSQLConfigMap(stateDir)
@@ -337,6 +319,141 @@ func readDatabases(stateDir string, containers []model.Container) []model.Databa
 	}
 	sort.Slice(out, func(a, b int) bool { return out[a].Name < out[b].Name })
 	return out
+}
+
+func readPostgreSQLDatabases(db dbEngine, procs map[string]bool) []model.Database {
+	running := false
+	for _, p := range db.procs {
+		if procs[p] {
+			running = true
+			break
+		}
+	}
+	dataDirs := postgresDataDirs(db.dataDirs)
+	if !running && len(dataDirs) == 0 {
+		return nil // engine neither running nor installed
+	}
+
+	if running {
+		if dbs := readPostgreSQLLocalDatabases(); len(dbs) > 0 {
+			return dbs
+		}
+	}
+
+	status := "stopped"
+	if running {
+		status = "running"
+	}
+
+	var out []model.Database
+	for _, dataDir := range dataDirs {
+		out = append(out, model.Database{
+			Name:   postgresClusterName(dataDir),
+			Engine: db.engine,
+			SizeGB: dirSizeGB(dataDir),
+			Status: status,
+		})
+	}
+	return out
+}
+
+func readPostgreSQLLocalDatabases() []model.Database {
+	psql, err := exec.LookPath("psql")
+	if err != nil {
+		return nil
+	}
+
+	query := `SELECT datname || '|' || pg_database_size(datname) FROM pg_database WHERE datallowconn AND NOT datistemplate ORDER BY datname;`
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, psql, "-AtX", "-d", "postgres", "-c", query)
+	cmd.Env = append(os.Environ(), "PGCONNECT_TIMEOUT=3")
+	output, err := cmd.Output()
+	if err != nil || ctx.Err() != nil {
+		return nil
+	}
+	return parsePostgreSQLInventory(output)
+}
+
+func parsePostgreSQLInventory(output []byte) []model.Database {
+	var out []model.Database
+	scanner := bufio.NewScanner(bytes.NewReader(output))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, "|")
+		if len(parts) != 2 {
+			continue
+		}
+		name := strings.TrimSpace(parts[0])
+		sizeRaw := strings.TrimSpace(parts[1])
+		if name == "" {
+			continue
+		}
+		var size *float64
+		if bytes, err := strconv.ParseFloat(sizeRaw, 64); err == nil {
+			size = f64ptr(round1(bytes / 1e9))
+		}
+		out = append(out, model.Database{
+			Name:   name,
+			Engine: "PostgreSQL",
+			SizeGB: size,
+			Status: "running",
+		})
+	}
+	sort.Slice(out, func(a, b int) bool { return out[a].Name < out[b].Name })
+	return out
+}
+
+func postgresDataDirs(roots []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, root := range roots {
+		for _, dir := range postgresDataDirsUnder(root, 0) {
+			if !seen[dir] {
+				seen[dir] = true
+				out = append(out, dir)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func postgresDataDirsUnder(root string, depth int) []string {
+	if fi, err := os.Stat(root); err != nil || !fi.IsDir() {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(root, "PG_VERSION")); err == nil {
+		return []string{root}
+	}
+	if depth >= 3 {
+		return nil
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			out = append(out, postgresDataDirsUnder(filepath.Join(root, entry.Name()), depth+1)...)
+		}
+	}
+	return out
+}
+
+func postgresClusterName(dataDir string) string {
+	clean := filepath.Clean(dataDir)
+	version := filepath.Base(filepath.Dir(clean))
+	cluster := filepath.Base(clean)
+	if version != "." && version != string(filepath.Separator) && version != "" && version != "pgsql" {
+		return "PostgreSQL " + version + "/" + cluster + " cluster"
+	}
+	return "PostgreSQL " + cluster + " cluster"
 }
 
 func loadMSSQLConfigMap(stateDir string) map[string]agentconfig.MSSQLInventory {
