@@ -1,4 +1,4 @@
-name: Publish dev apt repository
+name: Publish apt repository
 
 on:
   push:
@@ -80,24 +80,19 @@ jobs:
           mkdir -p "$GNUPGHOME"
           chmod 700 "$GNUPGHOME"
 
-          if [ -n "${APT_GPG_PRIVATE_KEY:-}" ]; then
-            printf '%s' "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
-          else
-            {
-              printf '%s\n' '%no-protection'
-              printf '%s\n' 'Key-Type: eddsa'
-              printf '%s\n' 'Key-Curve: ed25519'
-              printf '%s\n' 'Key-Usage: sign'
-              printf '%s\n' 'Name-Real: Meerkat Agent Dev Apt'
-              printf '%s\n' 'Name-Email: meerkat-agent-dev@tnisoft.ro'
-              printf '%s\n' 'Expire-Date: 30d'
-              printf '%s\n' '%commit'
-            } > "$RUNNER_TEMP/gpg-batch"
-            gpg --batch --generate-key "$RUNNER_TEMP/gpg-batch"
-            echo "::warning::Using an ephemeral dev apt signing key. Installers must refresh apt/key.gpg after each repository publication until APT_GPG_PRIVATE_KEY is configured."
+          if [ -z "${APT_GPG_PRIVATE_KEY:-}" ]; then
+            echo "::error::APT_GPG_PRIVATE_KEY is required. Configure the permanent Meerkat apt signing key before publishing."
+            exit 1
           fi
 
+          printf '%s' "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
+
           KEY_ID="$(gpg --batch --list-secret-keys --with-colons | awk -F: '/^sec:/ {print $5; exit}')"
+          if [ -z "$KEY_ID" ]; then
+            echo "::error::APT_GPG_PRIVATE_KEY did not import a usable secret key."
+            exit 1
+          fi
+
           gpg --batch --yes --armor --export "$KEY_ID" > public/apt/key.gpg
 
           SIGN_ARGS=()
