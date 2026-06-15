@@ -19,7 +19,8 @@ case "$1" in
 
     if command -v systemctl >/dev/null 2>&1; then
       systemctl daemon-reload || true
-      systemctl enable --now meerkat-agent.service || true
+      systemctl enable meerkat-agent.service || true
+      systemctl restart meerkat-agent.service || true
     fi
 
     echo
