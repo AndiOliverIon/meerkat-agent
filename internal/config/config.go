@@ -9,14 +9,17 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
+
+	"github.com/AndiOliverIon/meerkat-agent/internal/fileutil"
 )
 
 const mssqlFile = "mssql-inventory.json"
 const maxMSSQLInventories = 25
 
 var mssqlInventoryMu sync.Mutex
+
+var ErrMSSQLInventoryNotFound = errors.New("mssql inventory config not found")
 
 type MSSQLInventory struct {
 	Container string    `json:"container"`
@@ -86,15 +89,42 @@ func SaveMSSQLInventory(dir string, next MSSQLInventory) error {
 		configs = append(configs, next)
 	}
 
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+	return writeMSSQLInventories(dir, configs)
+}
+
+func RemoveMSSQLInventory(dir, container string) error {
+	mssqlInventoryMu.Lock()
+	defer mssqlInventoryMu.Unlock()
+
+	container = strings.TrimSpace(container)
+	if container == "" {
+		return errors.New("container is required")
 	}
-	data, err := json.MarshalIndent(configs, "", "  ")
+
+	configs, err := LoadMSSQLInventories(dir)
 	if err != nil {
 		return err
 	}
-	data = append(data, '\n')
-	return writeFilePreserveOwner(MSSQLInventoryPath(dir), data, 0o600)
+
+	next := configs[:0]
+	removed := false
+	for _, cfg := range configs {
+		if cfg.Container == container {
+			removed = true
+			continue
+		}
+		next = append(next, cfg)
+	}
+	if !removed {
+		return ErrMSSQLInventoryNotFound
+	}
+	if len(next) == 0 {
+		if err := os.Remove(MSSQLInventoryPath(dir)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	return writeMSSQLInventories(dir, next)
 }
 
 func SummarizeMSSQLInventory(cfg MSSQLInventory) MSSQLInventorySummary {
@@ -105,29 +135,14 @@ func SummarizeMSSQLInventory(cfg MSSQLInventory) MSSQLInventorySummary {
 	}
 }
 
-func writeFilePreserveOwner(path string, data []byte, perm os.FileMode) error {
-	var uid, gid int
-	preserveOwner := false
-	if info, err := os.Stat(path); err == nil {
-		if st, ok := info.Sys().(*syscall.Stat_t); ok {
-			uid, gid = int(st.Uid), int(st.Gid)
-			preserveOwner = true
-		}
-	}
-
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, perm); err != nil {
+func writeMSSQLInventories(dir string, configs []MSSQLInventory) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	if preserveOwner {
-		if err := os.Chown(tmp, uid, gid); err != nil {
-			_ = os.Remove(tmp)
-			return err
-		}
-	}
-	if err := os.Chmod(tmp, perm); err != nil {
-		_ = os.Remove(tmp)
+	data, err := json.MarshalIndent(configs, "", "  ")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	data = append(data, '\n')
+	return fileutil.WriteFilePreserveOwner(MSSQLInventoryPath(dir), data, 0o600)
 }

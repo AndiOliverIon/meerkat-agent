@@ -5,7 +5,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
+	agentconfig "github.com/AndiOliverIon/meerkat-agent/internal/config"
 	"github.com/AndiOliverIon/meerkat-agent/internal/identity"
 )
 
@@ -46,6 +48,10 @@ func TestRequireToken(t *testing.T) {
 }
 
 func TestRequireTokenReloadsRotatedToken(t *testing.T) {
+	oldTTL := tokenCacheTTL
+	tokenCacheTTL = 0
+	defer func() { tokenCacheTTL = oldTTL }()
+
 	dir := t.TempDir()
 	if err := os.WriteFile(identity.TokenPath(dir), []byte("old-token\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -85,6 +91,27 @@ func TestRequireTokenReloadsRotatedToken(t *testing.T) {
 	}
 }
 
+func TestRequireTokenCachesBriefly(t *testing.T) {
+	oldTTL := tokenCacheTTL
+	tokenCacheTTL = time.Minute
+	defer func() { tokenCacheTTL = oldTTL }()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(identity.TokenPath(dir), []byte("old-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{identityDir: dir}
+	if got, err := s.loadToken(); err != nil || got != "old-token" {
+		t.Fatalf("first loadToken = %q, %v; want old-token, nil", got, err)
+	}
+	if err := os.WriteFile(identity.TokenPath(dir), []byte("new-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.loadToken(); err != nil || got != "old-token" {
+		t.Fatalf("cached loadToken = %q, %v; want old-token, nil", got, err)
+	}
+}
+
 func TestBearer(t *testing.T) {
 	cases := map[string]string{
 		"Bearer abc": "abc",
@@ -98,5 +125,33 @@ func TestBearer(t *testing.T) {
 		if got := bearer(in); got != want {
 			t.Errorf("bearer(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestHandleDeleteMSSQLConfig(t *testing.T) {
+	dir := t.TempDir()
+	if err := agentconfig.SaveMSSQLInventory(dir, agentconfig.MSSQLInventory{
+		Container: "sql-a",
+		Username:  "reader",
+		Password:  "secret",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{identityDir: dir}
+	req := httptest.NewRequest(http.MethodDelete, "/v1/config/mssql/sql-a", nil)
+	req.SetPathValue("container", "sql-a")
+	rec := httptest.NewRecorder()
+	s.handleDeleteMSSQLConfig(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete status = %d, body %q; want 200", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/v1/config/mssql/sql-a", nil)
+	req.SetPathValue("container", "sql-a")
+	rec = httptest.NewRecorder()
+	s.handleDeleteMSSQLConfig(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("second delete status = %d, want 404", rec.Code)
 	}
 }

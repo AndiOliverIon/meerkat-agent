@@ -10,18 +10,21 @@
 //	meerkat-agent rotate-cert [--dir][--addr] replace TLS cert/key and print enrollment
 //	meerkat-agent fingerprint [--dir] print the TLS cert fingerprint
 //	meerkat-agent enroll [--dir][--addr] print the app enrollment details
+//	meerkat-agent config remove-mssql [--dir] <container>
 //	meerkat-agent version             print the agent version
 package main
 
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/AndiOliverIon/meerkat-agent/internal/collect"
+	agentconfig "github.com/AndiOliverIon/meerkat-agent/internal/config"
 	"github.com/AndiOliverIon/meerkat-agent/internal/identity"
 	"github.com/AndiOliverIon/meerkat-agent/internal/server"
 )
@@ -121,8 +124,39 @@ func main() {
 			fatal("enroll:", err)
 		}
 
+	case "config":
+		configCommand(os.Args[2:])
+
 	case "version", "-v", "--version":
 		fmt.Println("meerkat-agent", collect.Version)
+
+	default:
+		usage()
+		os.Exit(2)
+	}
+}
+
+func configCommand(args []string) {
+	if len(args) < 1 {
+		usage()
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "remove-mssql":
+		fs := flag.NewFlagSet("config remove-mssql", flag.ExitOnError)
+		dir := fs.String("dir", identity.DefaultDir, "identity dir (cert/key/token/config)")
+		_ = fs.Parse(args[1:])
+		if fs.NArg() != 1 {
+			fatal("config remove-mssql: container is required")
+		}
+		container := strings.TrimSpace(fs.Arg(0))
+		if err := agentconfig.RemoveMSSQLInventory(*dir, container); err != nil {
+			if errors.Is(err, agentconfig.ErrMSSQLInventoryNotFound) {
+				fatal("config remove-mssql:", container, "is not configured")
+			}
+			fatal("config remove-mssql:", err)
+		}
+		fmt.Println("meerkat-agent: removed MSSQL inventory config for", container)
 
 	default:
 		usage()
@@ -205,5 +239,6 @@ usage:
   meerkat-agent rotate-cert [--dir][--addr] replace TLS cert/key and print enrollment details
   meerkat-agent fingerprint [--dir]  print the TLS cert fingerprint
   meerkat-agent enroll [--dir][--addr] print the app enrollment details
+  meerkat-agent config remove-mssql [--dir] <container>
   meerkat-agent version              print version`)
 }

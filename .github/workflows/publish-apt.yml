@@ -3,6 +3,7 @@ name: Publish apt repository
 on:
   push:
     branches: [main]
+    tags: ['v*']
   workflow_dispatch:
 
 permissions:
@@ -40,7 +41,11 @@ jobs:
       - name: Build Debian packages
         run: |
           set -eu
-          VERSION="0.1.0~dev.${GITHUB_RUN_NUMBER}"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="0.1.0~dev.${GITHUB_RUN_NUMBER}+${GITHUB_SHA::7}"
+          fi
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           mkdir -p dist/deb
           scripts/build-deb.sh "$VERSION" amd64 dist/deb

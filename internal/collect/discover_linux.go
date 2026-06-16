@@ -450,7 +450,7 @@ func postgresClusterName(dataDir string) string {
 	clean := filepath.Clean(dataDir)
 	version := filepath.Base(filepath.Dir(clean))
 	cluster := filepath.Base(clean)
-	if version != "." && version != string(filepath.Separator) && version != "" && version != "pgsql" {
+	if version != "." && version != string(filepath.Separator) && version != "" && version != "pgsql" && version != "postgresql" {
 		return "PostgreSQL " + version + "/" + cluster + " cluster"
 	}
 	return "PostgreSQL " + cluster + " cluster"
@@ -743,11 +743,43 @@ func shellQuote(s string) string {
 }
 
 func isMSSQLContainer(c model.Container) bool {
-	s := strings.ToLower(c.Name + " " + c.Image)
-	return strings.Contains(s, "mssql") ||
-		strings.Contains(s, "sqlserver") ||
-		strings.Contains(s, "sql-server") ||
-		strings.Contains(s, "azure-sql-edge")
+	return isMSSQLName(c.Name) || isMSSQLImage(c.Image)
+}
+
+func isMSSQLName(name string) bool {
+	name = strings.Trim(strings.ToLower(name), "/")
+	switch name {
+	case "mssql", "sqlserver", "sql-server", "mssql-server", "azure-sql-edge":
+		return true
+	}
+	for _, part := range splitContainerRef(name) {
+		if part == "mssql" || part == "sqlserver" {
+			return true
+		}
+	}
+	return false
+}
+
+func isMSSQLImage(image string) bool {
+	for _, segment := range splitImageRef(image) {
+		switch segment {
+		case "mssql", "sqlserver", "sql-server", "azure-sql-edge":
+			return true
+		}
+	}
+	return false
+}
+
+func splitContainerRef(value string) []string {
+	return strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
+		return r == '/' || r == ':' || r == '@' || r == '.' || r == '_' || r == '-'
+	})
+}
+
+func splitImageRef(value string) []string {
+	return strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
+		return r == '/' || r == ':' || r == '@'
+	})
 }
 
 // runningProcs returns the set of process "comm" names currently running.
@@ -773,9 +805,9 @@ func runningProcs() map[string]bool {
 	return set
 }
 
-// dirSizeGB sums the apparent size of all files under root and returns it
-// rounded, or nil if root itself can't be accessed (e.g. permission
-// denied). Individual unreadable entries deeper in the tree are skipped.
+// dirSizeGB sums the physical allocation of files under root and returns it
+// rounded, or nil if root itself can't be accessed (e.g. permission denied).
+// Individual unreadable entries deeper in the tree are skipped.
 func dirSizeGB(root string) *float64 {
 	now := time.Now()
 	dirSizeCache.Lock()
@@ -800,7 +832,7 @@ func dirSizeGB(root string) *float64 {
 			return nil
 		}
 		if info, ierr := d.Info(); ierr == nil {
-			total += info.Size()
+			total += fileDiskBytes(info)
 		}
 		return nil
 	})
@@ -955,15 +987,21 @@ func scanCaddyfile(path string, set map[string]bool, sources map[string]string) 
 // validHost rejects wildcards, catch-alls, and anything that isn't a plausible
 // DNS hostname so the app never displays a junk target.
 func validHost(h string) bool {
-	if h == "" || h == "_" || strings.HasPrefix(h, "*") || strings.HasPrefix(h, "localhost") {
+	if h == "" || h == "_" || strings.HasPrefix(h, "*") || h == "localhost" || strings.HasPrefix(h, "localhost.") {
 		return false
 	}
 	if !strings.Contains(h, ".") {
 		return false
 	}
-	for _, r := range h {
-		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '.' || r == '-') {
+	labels := strings.Split(h, ".")
+	for _, label := range labels {
+		if label == "" || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
 			return false
+		}
+		for _, r := range label {
+			if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-') {
+				return false
+			}
 		}
 	}
 	return true

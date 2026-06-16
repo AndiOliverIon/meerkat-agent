@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"regexp"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -29,9 +30,14 @@ type Server struct {
 	identityDir string
 	certFile    string
 	keyFile     string
+
+	tokenMu    sync.Mutex
+	token      string
+	tokenUntil time.Time
 }
 
 var validContainerName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
+var tokenCacheTTL = time.Second
 
 // New builds a Server bound to addr (e.g. ":8765"), loading the TLS cert and
 // bearer token from the identity dir. It returns an error if the token can't be
@@ -64,6 +70,7 @@ func (s *Server) Run() error {
 	})))
 
 	mux.Handle("POST /v1/config/mssql", s.requireToken(http.HandlerFunc(s.handleMSSQLConfig)))
+	mux.Handle("DELETE /v1/config/mssql/{container}", s.requireToken(http.HandlerFunc(s.handleDeleteMSSQLConfig)))
 
 	srv := &http.Server{
 		Addr:              s.addr,
@@ -134,12 +141,26 @@ func (s *Server) handleMSSQLConfig(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func validateMSSQLConfigRequest(container, username, password string) error {
-	if container == "" {
-		return errors.New("container is required")
+func (s *Server) handleDeleteMSSQLConfig(w http.ResponseWriter, r *http.Request) {
+	container := strings.TrimSpace(r.PathValue("container"))
+	if err := validateMSSQLContainer(container); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
-	if !validContainerName.MatchString(container) {
-		return errors.New("container name contains invalid characters")
+	if err := agentconfig.RemoveMSSQLInventory(s.identityDir, container); err != nil {
+		if errors.Is(err, agentconfig.ErrMSSQLInventoryNotFound) {
+			http.Error(w, "MSSQL inventory config not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "could not remove MSSQL inventory config", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "removed", "container": container})
+}
+
+func validateMSSQLConfigRequest(container, username, password string) error {
+	if err := validateMSSQLContainer(container); err != nil {
+		return err
 	}
 	if username == "" {
 		return errors.New("username is required")
@@ -150,11 +171,21 @@ func validateMSSQLConfigRequest(container, username, password string) error {
 	return nil
 }
 
+func validateMSSQLContainer(container string) error {
+	if container == "" {
+		return errors.New("container is required")
+	}
+	if !validContainerName.MatchString(container) {
+		return errors.New("container name contains invalid characters")
+	}
+	return nil
+}
+
 // requireToken rejects any request whose Authorization header doesn't carry the
 // agent's bearer token. Comparison is constant-time.
 func (s *Server) requireToken(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token, err := identity.LoadToken(s.identityDir)
+		token, err := s.loadToken()
 		if err != nil {
 			http.Error(w, "agent token unavailable", http.StatusServiceUnavailable)
 			return
@@ -168,6 +199,24 @@ func (s *Server) requireToken(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (s *Server) loadToken() (string, error) {
+	now := time.Now()
+	s.tokenMu.Lock()
+	defer s.tokenMu.Unlock()
+	if s.token != "" && now.Before(s.tokenUntil) {
+		return s.token, nil
+	}
+	token, err := identity.LoadToken(s.identityDir)
+	if err != nil {
+		s.token = ""
+		s.tokenUntil = time.Time{}
+		return "", err
+	}
+	s.token = token
+	s.tokenUntil = now.Add(tokenCacheTTL)
+	return token, nil
 }
 
 // bearer extracts the token from an "Authorization: Bearer <token>" header.

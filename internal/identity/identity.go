@@ -23,8 +23,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
+
+	"github.com/AndiOliverIon/meerkat-agent/internal/fileutil"
 )
 
 // DefaultDir is where the cert, key, and token live as program-generated state.
@@ -106,14 +107,14 @@ func writeNewCert(dir string) error {
 
 	// Write cert (0644) and key (0600). Write key first under a temp name and
 	// rename so it never exists world-readable mid-write.
-	if err := writeFilePreserveOwner(CertPath(dir), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644); err != nil {
+	if err := fileutil.WriteFilePreserveOwner(CertPath(dir), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644); err != nil {
 		return err
 	}
 	keyDER, err := x509.MarshalECPrivateKey(priv)
 	if err != nil {
 		return err
 	}
-	if err := writeFilePreserveOwner(KeyPath(dir), pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
+	if err := fileutil.WriteFilePreserveOwner(KeyPath(dir), pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
 		return err
 	}
 	return nil
@@ -133,7 +134,7 @@ func GenerateToken(dir string) (token string, created bool, err error) {
 		return "", false, err
 	}
 	tok := base64.RawURLEncoding.EncodeToString(b)
-	if err := writeFile(TokenPath(dir), []byte(tok+"\n"), 0o600); err != nil {
+	if err := fileutil.WriteFilePreserveOwner(TokenPath(dir), []byte(tok+"\n"), 0o600); err != nil {
 		return "", false, err
 	}
 	return tok, true, nil
@@ -151,7 +152,7 @@ func RotateToken(dir string) (string, error) {
 		return "", err
 	}
 	tok := base64.RawURLEncoding.EncodeToString(b)
-	if err := writeFilePreserveOwner(TokenPath(dir), []byte(tok+"\n"), 0o600); err != nil {
+	if err := fileutil.WriteFilePreserveOwner(TokenPath(dir), []byte(tok+"\n"), 0o600); err != nil {
 		return "", err
 	}
 	return tok, nil
@@ -227,39 +228,4 @@ func hostIPs() []net.IP {
 func fileExists(p string) bool {
 	_, err := os.Stat(p)
 	return err == nil
-}
-
-func writeFile(path string, data []byte, perm os.FileMode) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, perm); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
-}
-
-func writeFilePreserveOwner(path string, data []byte, perm os.FileMode) error {
-	var uid, gid int
-	preserveOwner := false
-	if info, err := os.Stat(path); err == nil {
-		if st, ok := info.Sys().(*syscall.Stat_t); ok {
-			uid, gid = int(st.Uid), int(st.Gid)
-			preserveOwner = true
-		}
-	}
-
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, perm); err != nil {
-		return err
-	}
-	if preserveOwner {
-		if err := os.Chown(tmp, uid, gid); err != nil {
-			_ = os.Remove(tmp)
-			return err
-		}
-	}
-	if err := os.Chmod(tmp, perm); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return os.Rename(tmp, path)
 }

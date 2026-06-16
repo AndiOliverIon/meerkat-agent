@@ -3,9 +3,12 @@
 package collect
 
 import (
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/AndiOliverIon/meerkat-agent/internal/model"
 )
 
 func TestMSSQLDatabaseNameFromFile(t *testing.T) {
@@ -77,5 +80,111 @@ func TestPostgresClusterName(t *testing.T) {
 	}
 	if got, want := postgresClusterName("/var/lib/pgsql/data"), "PostgreSQL data cluster"; got != want {
 		t.Fatalf("postgresClusterName pgsql = %q, want %q", got, want)
+	}
+	if got, want := postgresClusterName("/var/lib/postgresql/main"), "PostgreSQL main cluster"; got != want {
+		t.Fatalf("postgresClusterName no version = %q, want %q", got, want)
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	tests := map[string]string{
+		"readonly":         "'readonly'",
+		"space value":      "'space value'",
+		"quoted'value":     "'quoted'\"'\"'value'",
+		"$(touch /tmp/no)": "'$(touch /tmp/no)'",
+	}
+	for input, want := range tests {
+		if got := shellQuote(input); got != want {
+			t.Fatalf("shellQuote(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestDockerDemux(t *testing.T) {
+	raw := appendDockerFrame(nil, 1, []byte("hello\n"))
+	raw = appendDockerFrame(raw, 2, []byte("warn\n"))
+	if got, want := string(dockerDemux(raw)), "hello\nwarn\n"; got != want {
+		t.Fatalf("dockerDemux framed = %q, want %q", got, want)
+	}
+
+	plain := []byte("plain output\n")
+	if got := string(dockerDemux(plain)); got != string(plain) {
+		t.Fatalf("dockerDemux plain = %q, want %q", got, plain)
+	}
+
+	truncated := appendDockerFrame(nil, 1, []byte("complete"))
+	truncated = append(truncated, []byte{1, 0, 0, 0, 0, 0, 0, 20, 'x'}...)
+	if got, want := string(dockerDemux(truncated)), "complete"; got != want {
+		t.Fatalf("dockerDemux truncated = %q, want %q", got, want)
+	}
+}
+
+func appendDockerFrame(out []byte, stream byte, payload []byte) []byte {
+	header := []byte{stream, 0, 0, 0, 0, 0, 0, 0}
+	binary.BigEndian.PutUint32(header[4:8], uint32(len(payload)))
+	out = append(out, header...)
+	return append(out, payload...)
+}
+
+func TestMergeMSSQLDatabaseInventory(t *testing.T) {
+	runningSize := 1.5
+	fileSize := 2.0
+	primary := []model.Database{{Name: "app", Engine: "MSSQL", SizeGB: &runningSize, Status: "running"}}
+	fallback := []model.Database{
+		{Name: "APP", Engine: "MSSQL", SizeGB: &fileSize, Status: "detected"},
+		{Name: "archive", Engine: "MSSQL", Status: "detected"},
+	}
+
+	got := mergeMSSQLDatabaseInventory(primary, fallback)
+	if len(got) != 2 {
+		t.Fatalf("mergeMSSQLDatabaseInventory len = %d, want 2: %#v", len(got), got)
+	}
+	if got[0].Name != "app" || got[0].Status != "running" {
+		t.Fatalf("first merged db = %#v, want running app from primary", got[0])
+	}
+	if got[1].Name != "archive" {
+		t.Fatalf("second merged db = %#v, want archive fallback", got[1])
+	}
+}
+
+func TestIsMSSQLContainer(t *testing.T) {
+	tests := []struct {
+		name string
+		c    model.Container
+		want bool
+	}{
+		{"official image", model.Container{Name: "db", Image: "mcr.microsoft.com/mssql/server:2022-latest"}, true},
+		{"azure edge image", model.Container{Name: "db", Image: "mcr.microsoft.com/azure-sql-edge:latest"}, true},
+		{"simple name", model.Container{Name: "mssql", Image: "ubuntu"}, true},
+		{"dismiss false positive", model.Container{Name: "dismiss-sql-server-cache", Image: "redis:7"}, false},
+		{"postgres", model.Container{Name: "postgres", Image: "postgres:16"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isMSSQLContainer(tt.c); got != tt.want {
+				t.Fatalf("isMSSQLContainer(%#v) = %v, want %v", tt.c, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidHost(t *testing.T) {
+	tests := map[string]bool{
+		"example.com":       true,
+		"api.example.co.uk": true,
+		"localhost":         false,
+		"localhost.local":   false,
+		"example":           false,
+		"*.example.com":     false,
+		"_":                 false,
+		"bad..example.com":  false,
+		"-bad.example.com":  false,
+		"bad-.example.com":  false,
+		"bad_example.com":   false,
+	}
+	for input, want := range tests {
+		if got := validHost(input); got != want {
+			t.Fatalf("validHost(%q) = %v, want %v", input, got, want)
+		}
 	}
 }

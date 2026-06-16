@@ -102,6 +102,7 @@ meerkat-agent rotate-token [--dir]      replace token and print enrollment
 meerkat-agent rotate-cert [--dir]       replace TLS cert/key and print enrollment
 meerkat-agent fingerprint [--dir]       print TLS cert fingerprint
 meerkat-agent enroll [--dir][--addr]    print app enrollment details
+meerkat-agent config remove-mssql [--dir] <container>
 meerkat-agent version                   print version
 ```
 
@@ -116,6 +117,7 @@ meerkat-agent serve --addr :8765
 | `GET /healthz` | none | liveness only |
 | `GET /v1/status` | bearer token | full snapshot JSON |
 | `POST /v1/config/mssql` | bearer token | tests and stores optional MSSQL inventory credentials |
+| `DELETE /v1/config/mssql/{container}` | bearer token | removes stored MSSQL inventory credentials |
 
 `/v1/status` is served over HTTPS with the agent's self-signed certificate.
 
@@ -136,6 +138,12 @@ The agent then:
 Use a dedicated read-only monitoring login, not an administrator password.
 This is agent configuration, not a server action: the app does not restart
 services, mutate databases, or execute user workload changes.
+
+To revoke stored MSSQL inventory credentials later:
+
+```sh
+sudo meerkat-agent config remove-mssql <container>
+```
 
 ### Enrollment
 
