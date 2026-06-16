@@ -41,6 +41,10 @@ func TestScanMSSQLDataDirSkipsSystemDatabases(t *testing.T) {
 		"msdblog.ldf",
 		"tempdb.mdf",
 		"templog.ldf",
+		"model_msdbdata.mdf",
+		"model_msdblog.ldf",
+		"model_replicatedmaster.mdf",
+		"model_replicatedmaster_log.ldf",
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("data"), 0o644); err != nil {
 			t.Fatal(err)

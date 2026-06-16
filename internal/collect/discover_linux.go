@@ -538,6 +538,9 @@ func scanMSSQLDataDir(root string) []model.Database {
 		if ext != ".mdf" && ext != ".ndf" && ext != ".ldf" {
 			continue
 		}
+		if isMSSQLSystemDatabaseFile(entry.Name()) {
+			continue
+		}
 		info, err := entry.Info()
 		if err != nil {
 			continue
@@ -583,6 +586,17 @@ func mssqlDatabaseNameFromFile(filename string) string {
 		return stem[:len(stem)-len("_log")]
 	}
 	return stem
+}
+
+func isMSSQLSystemDatabaseFile(filename string) bool {
+	stem := strings.ToLower(strings.TrimSuffix(filename, filepath.Ext(filename)))
+	base := strings.TrimSuffix(stem, "_log")
+
+	switch base {
+	case "master", "mastlog", "model", "modellog", "msdbdata", "msdblog", "tempdb", "templog":
+		return true
+	}
+	return strings.HasPrefix(base, "model_msdb") || strings.HasPrefix(base, "model_replicatedmaster")
 }
 
 func fileDiskBytes(info fs.FileInfo) int64 {
