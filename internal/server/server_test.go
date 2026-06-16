@@ -91,7 +91,7 @@ func TestBearer(t *testing.T) {
 		"Bearer ":    "",
 		"abc":        "",
 		"":           "",
-		"bearer abc": "", // case-sensitive scheme
+		"bearer abc": "abc",
 		"Bearer a b": "a b",
 	}
 	for in, want := range cases {

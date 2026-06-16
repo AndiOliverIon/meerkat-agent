@@ -8,6 +8,7 @@
 package collect
 
 import (
+	"math"
 	"sync"
 	"time"
 
@@ -77,7 +78,14 @@ func (c *Collector) sampleCore() model.Snapshot {
 		var cpuPct float64
 		if c.hasPrev {
 			if dTotal := cpuTotal - c.prevCPUTotal; dTotal > 0 {
-				cpuPct = 100 * float64(cpuBusy-c.prevCPUBusy) / float64(dTotal)
+				var dBusy uint64
+				if cpuBusy >= c.prevCPUBusy {
+					dBusy = cpuBusy - c.prevCPUBusy
+				}
+				cpuPct = 100 * float64(dBusy) / float64(dTotal)
+				if cpuPct > 100 {
+					cpuPct = 100
+				}
 			}
 		}
 		cpu = metric(cpuPct, 100, "%")
@@ -86,8 +94,8 @@ func (c *Collector) sampleCore() model.Snapshot {
 	c.prevTime = now
 	if cpuOK {
 		c.prevCPUBusy, c.prevCPUTotal = cpuBusy, cpuTotal
+		c.hasPrev = true
 	}
-	c.hasPrev = true
 
 	var memory *model.Metric
 	if used, total, ok := readMem(); ok {
@@ -155,11 +163,11 @@ func diskUsageFromStatfs(blocks, bfree, bavail, blockSize float64) (usedGB, tota
 }
 
 func round1(v float64) float64 {
-	return float64(int64(v*10+0.5)) / 10
+	return math.Round(v*10) / 10
 }
 
 func round2(v float64) float64 {
-	return float64(int64(v*100+0.5)) / 100
+	return math.Round(v*100) / 100
 }
 
 // f64ptr / intptr are small helpers for building nullable contract fields.

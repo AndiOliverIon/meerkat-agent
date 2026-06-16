@@ -3,13 +3,18 @@
 package server
 
 import (
+	"context"
 	"crypto/subtle"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/AndiOliverIon/meerkat-agent/internal/collect"
@@ -63,13 +68,29 @@ func (s *Server) Run() error {
 	srv := &http.Server{
 		Addr:              s.addr,
 		Handler:           mux,
+		TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12},
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Printf("meerkat-agent shutdown: %v", err)
+		}
+	}()
+
 	log.Printf("meerkat-agent listening (https) on %s (GET /v1/status, /healthz)", s.addr)
-	return srv.ListenAndServeTLS(s.certFile, s.keyFile)
+	if err := srv.ListenAndServeTLS(s.certFile, s.keyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
 }
 
 func (s *Server) handleMSSQLConfig(w http.ResponseWriter, r *http.Request) {
@@ -152,7 +173,7 @@ func (s *Server) requireToken(next http.Handler) http.Handler {
 // bearer extracts the token from an "Authorization: Bearer <token>" header.
 func bearer(header string) string {
 	const prefix = "Bearer "
-	if len(header) > len(prefix) && header[:len(prefix)] == prefix {
+	if len(header) > len(prefix) && strings.EqualFold(header[:len(prefix)], prefix) {
 		return header[len(prefix):]
 	}
 	return ""

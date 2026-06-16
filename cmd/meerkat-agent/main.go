@@ -35,7 +35,10 @@ func main() {
 	switch os.Args[1] {
 	case "once":
 		snap := collect.New(identity.DefaultDir).Once()
-		out, _ := json.MarshalIndent(snap, "", "  ")
+		out, err := json.MarshalIndent(snap, "", "  ")
+		if err != nil {
+			fatal("once:", err)
+		}
 		fmt.Println(string(out))
 
 	case "serve":

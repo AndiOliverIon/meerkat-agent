@@ -773,15 +773,6 @@ func runningProcs() map[string]bool {
 	return set
 }
 
-func firstExistingDir(paths []string) string {
-	for _, p := range paths {
-		if fi, err := os.Stat(p); err == nil && fi.IsDir() {
-			return p
-		}
-	}
-	return ""
-}
-
 // dirSizeGB sums the apparent size of all files under root and returns it
 // rounded, or nil if root itself can't be accessed (e.g. permission
 // denied). Individual unreadable entries deeper in the tree are skipped.
