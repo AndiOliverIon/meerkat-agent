@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -304,6 +305,8 @@ func readDatabases(stateDir string, containers []model.Container) []model.Databa
 				if dbs, err := readMSSQLContainerDatabases(c.Name, cfg.Username, cfg.Password); err == nil {
 					out = append(out, mergeMSSQLDatabaseInventory(dbs, fileDBs)...)
 					continue
+				} else {
+					log.Printf("mssql inventory for container %q failed: %v", c.Name, err)
 				}
 			}
 			if len(fileDBs) > 0 {
@@ -626,20 +629,43 @@ func mergeMSSQLDatabaseInventory(primary, fallback []model.Database) []model.Dat
 
 func readMSSQLContainerDatabases(container, username, password string) ([]model.Database, error) {
 	output, err := dockerExec(container, []string{
-		"sh", "-c", mssqlSQLCmdShell(username),
+		"sh", "-c", mssqlSQLCmdShell(username, mssqlMetadataInventoryQuery),
+	}, []string{"SQLCMDPASSWORD=" + password})
+	if err != nil {
+		if fallback, fallbackErr := readMSSQLContainerDatabaseSizes(container, username, password); fallbackErr == nil {
+			return fallback, nil
+		}
+		return nil, err
+	}
+	dbs := parseMSSQLInventory(output)
+	if len(dbs) == 0 {
+		if fallback, fallbackErr := readMSSQLContainerDatabaseSizes(container, username, password); fallbackErr == nil {
+			return fallback, nil
+		}
+		return nil, errors.New("mssql inventory returned no databases")
+	}
+	return dbs, nil
+}
+
+func readMSSQLContainerDatabaseSizes(container, username, password string) ([]model.Database, error) {
+	output, err := dockerExec(container, []string{
+		"sh", "-c", mssqlSQLCmdShell(username, mssqlSizeInventoryQuery),
 	}, []string{"SQLCMDPASSWORD=" + password})
 	if err != nil {
 		return nil, err
 	}
 	dbs := parseMSSQLInventory(output)
 	if len(dbs) == 0 {
-		return nil, errors.New("mssql inventory returned no databases")
+		return nil, errors.New("mssql size inventory returned no databases")
 	}
 	return dbs, nil
 }
 
-func mssqlSQLCmdShell(username string) string {
-	query := `SET NOCOUNT ON; SELECT d.name + '|' + CONVERT(varchar(32), CAST(SUM(mf.size) * 8.0 / 1024 / 1024 AS decimal(18,3))) + '|' + d.state_desc + '|' + d.recovery_model_desc + '|' + CONVERT(varchar(33), d.create_date, 126) FROM sys.databases d JOIN sys.master_files mf ON mf.database_id = d.database_id WHERE d.database_id > 4 GROUP BY d.name, d.state_desc, d.recovery_model_desc, d.create_date ORDER BY d.name;`
+const mssqlMetadataInventoryQuery = `SET NOCOUNT ON; SELECT CONCAT(d.name, '|', CONVERT(varchar(32), CAST(SUM(mf.size) * 8.0 / 1024 / 1024 AS decimal(18,3))), '|', COALESCE(d.state_desc, ''), '|', COALESCE(d.recovery_model_desc, ''), '|', CONVERT(varchar(33), d.create_date, 126)) FROM sys.databases d JOIN sys.master_files mf ON mf.database_id = d.database_id WHERE d.database_id > 4 GROUP BY d.name, d.state_desc, d.recovery_model_desc, d.create_date ORDER BY d.name;`
+
+const mssqlSizeInventoryQuery = `SET NOCOUNT ON; SELECT DB_NAME(database_id) + '|' + CONVERT(varchar(32), CAST(SUM(size) * 8.0 / 1024 / 1024 AS decimal(18,3))) FROM sys.master_files WHERE database_id > 4 GROUP BY database_id ORDER BY DB_NAME(database_id);`
+
+func mssqlSQLCmdShell(username string, query string) string {
 	return fmt.Sprintf(`SQLCMD="$(command -v sqlcmd || command -v /opt/mssql-tools18/bin/sqlcmd || command -v /opt/mssql-tools/bin/sqlcmd)" && "$SQLCMD" -S localhost -U %s -C -b -l 5 -h -1 -W -Q %s`,
 		shellQuote(username),
 		shellQuote(query),
