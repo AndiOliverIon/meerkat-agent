@@ -76,10 +76,13 @@ type Container struct {
 
 // Database is a discovered database instance/file.
 type Database struct {
-	Name   string   `json:"name"`
-	Engine string   `json:"engine"`
-	SizeGB *float64 `json:"sizeGB"` // null if not obtained (e.g. no read access)
-	Status string   `json:"status"` // detected | unavailable | running | stopped
+	Name          string     `json:"name"`
+	Engine        string     `json:"engine"`
+	SizeGB        *float64   `json:"sizeGB"` // null if not obtained (e.g. no read access)
+	Status        string     `json:"status"` // detected | unavailable | running | stopped
+	State         *string    `json:"state,omitempty"`
+	RecoveryModel *string    `json:"recoveryModel,omitempty"`
+	CreatedAt     *time.Time `json:"createdAt,omitempty"`
 }
 
 // Endpoint is a hostname/domain detected from supported web-server config.

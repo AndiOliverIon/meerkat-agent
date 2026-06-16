@@ -639,7 +639,7 @@ func readMSSQLContainerDatabases(container, username, password string) ([]model.
 }
 
 func mssqlSQLCmdShell(username string) string {
-	query := `SET NOCOUNT ON; SELECT DB_NAME(database_id) + '|' + CONVERT(varchar(32), CAST(SUM(size) * 8.0 / 1024 / 1024 AS decimal(18,3))) FROM sys.master_files WHERE database_id > 4 GROUP BY database_id ORDER BY DB_NAME(database_id);`
+	query := `SET NOCOUNT ON; SELECT d.name + '|' + CONVERT(varchar(32), CAST(SUM(mf.size) * 8.0 / 1024 / 1024 AS decimal(18,3))) + '|' + d.state_desc + '|' + d.recovery_model_desc + '|' + CONVERT(varchar(33), d.create_date, 126) FROM sys.databases d JOIN sys.master_files mf ON mf.database_id = d.database_id WHERE d.database_id > 4 GROUP BY d.name, d.state_desc, d.recovery_model_desc, d.create_date ORDER BY d.name;`
 	return fmt.Sprintf(`SQLCMD="$(command -v sqlcmd || command -v /opt/mssql-tools18/bin/sqlcmd || command -v /opt/mssql-tools/bin/sqlcmd)" && "$SQLCMD" -S localhost -U %s -C -b -l 5 -h -1 -W -Q %s`,
 		shellQuote(username),
 		shellQuote(query),
@@ -655,7 +655,7 @@ func parseMSSQLInventory(output []byte) []model.Database {
 			continue
 		}
 		parts := strings.Split(line, "|")
-		if len(parts) != 2 {
+		if len(parts) != 2 && len(parts) != 5 {
 			continue
 		}
 		name := strings.TrimSpace(parts[0])
@@ -667,15 +667,39 @@ func parseMSSQLInventory(output []byte) []model.Database {
 		if parsed, err := strconv.ParseFloat(sizeRaw, 64); err == nil {
 			size = f64ptr(parsed)
 		}
-		out = append(out, model.Database{
+		db := model.Database{
 			Name:   name,
 			Engine: "MSSQL",
 			SizeGB: size,
 			Status: "running",
-		})
+		}
+		if len(parts) == 5 {
+			db.State = strptr(strings.TrimSpace(parts[2]))
+			db.RecoveryModel = strptr(strings.TrimSpace(parts[3]))
+			db.CreatedAt = parseMSSQLDate(strings.TrimSpace(parts[4]))
+		}
+		out = append(out, db)
 	}
 	sort.Slice(out, func(a, b int) bool { return out[a].Name < out[b].Name })
 	return out
+}
+
+func parseMSSQLDate(raw string) *time.Time {
+	if raw == "" {
+		return nil
+	}
+	layouts := []string{
+		"2006-01-02T15:04:05.9999999",
+		"2006-01-02T15:04:05.999",
+		"2006-01-02T15:04:05",
+	}
+	for _, layout := range layouts {
+		if parsed, err := time.Parse(layout, raw); err == nil {
+			t := parsed.UTC()
+			return &t
+		}
+	}
+	return nil
 }
 
 func isMSSQLSystemDatabase(name string) bool {

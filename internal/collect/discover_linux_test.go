@@ -71,6 +71,27 @@ func TestParseMSSQLInventorySkipsSystemDatabases(t *testing.T) {
 	}
 }
 
+func TestParseMSSQLInventoryReadsSQLMetadata(t *testing.T) {
+	got := parseMSSQLInventory([]byte("app|42.5|ONLINE|FULL|2026-06-09T10:01:02.123\n"))
+
+	if len(got) != 1 {
+		t.Fatalf("parseMSSQLInventory len = %d, want 1: %#v", len(got), got)
+	}
+	db := got[0]
+	if db.Name != "app" || db.Status != "running" {
+		t.Fatalf("db = %#v, want running app", db)
+	}
+	if db.State == nil || *db.State != "ONLINE" {
+		t.Fatalf("state = %v, want ONLINE", db.State)
+	}
+	if db.RecoveryModel == nil || *db.RecoveryModel != "FULL" {
+		t.Fatalf("recovery model = %v, want FULL", db.RecoveryModel)
+	}
+	if db.CreatedAt == nil || db.CreatedAt.UTC().Format("2006-01-02T15:04:05.000Z") != "2026-06-09T10:01:02.123Z" {
+		t.Fatalf("createdAt = %v, want parsed timestamp", db.CreatedAt)
+	}
+}
+
 func TestParsePostgreSQLInventory(t *testing.T) {
 	dbs := parsePostgreSQLInventory([]byte("appdb|1234567890\npostgres|8192\nignored\n"))
 
