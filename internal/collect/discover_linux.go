@@ -543,7 +543,7 @@ func scanMSSQLDataDir(root string) []model.Database {
 			continue
 		}
 		name := mssqlDatabaseNameFromFile(entry.Name())
-		if name == "" {
+		if name == "" || isMSSQLSystemDatabase(name) {
 			continue
 		}
 		sizes[name] += fileDiskBytes(info)
@@ -646,7 +646,7 @@ func parseMSSQLInventory(output []byte) []model.Database {
 		}
 		name := strings.TrimSpace(parts[0])
 		sizeRaw := strings.TrimSpace(parts[1])
-		if name == "" {
+		if name == "" || isMSSQLSystemDatabase(name) {
 			continue
 		}
 		var size *float64
@@ -662,6 +662,15 @@ func parseMSSQLInventory(output []byte) []model.Database {
 	}
 	sort.Slice(out, func(a, b int) bool { return out[a].Name < out[b].Name })
 	return out
+}
+
+func isMSSQLSystemDatabase(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "master", "model", "msdb", "tempdb":
+		return true
+	default:
+		return false
+	}
 }
 
 func TestMSSQLInventory(container, username, password string) ([]model.Database, error) {

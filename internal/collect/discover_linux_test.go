@@ -28,6 +28,45 @@ func TestMSSQLDatabaseNameFromFile(t *testing.T) {
 	}
 }
 
+func TestScanMSSQLDataDirSkipsSystemDatabases(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{
+		"ArdisDemo228.mdf",
+		"ArdisDemo228_log.ldf",
+		"master.mdf",
+		"mastlog.ldf",
+		"model.mdf",
+		"modellog.ldf",
+		"msdbdata.mdf",
+		"msdblog.ldf",
+		"tempdb.mdf",
+		"templog.ldf",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("data"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got := scanMSSQLDataDir(dir)
+	if len(got) != 1 {
+		t.Fatalf("scanMSSQLDataDir len = %d, want 1: %#v", len(got), got)
+	}
+	if got[0].Name != "ArdisDemo228" {
+		t.Fatalf("scanMSSQLDataDir database = %q, want ArdisDemo228", got[0].Name)
+	}
+}
+
+func TestParseMSSQLInventorySkipsSystemDatabases(t *testing.T) {
+	got := parseMSSQLInventory([]byte("master|10\napp|42.5\nmodel|1\nmsdb|2\ntempdb|3\narchive|7\n"))
+
+	if len(got) != 2 {
+		t.Fatalf("parseMSSQLInventory len = %d, want 2: %#v", len(got), got)
+	}
+	if got[0].Name != "app" || got[1].Name != "archive" {
+		t.Fatalf("parseMSSQLInventory = %#v, want app and archive only", got)
+	}
+}
+
 func TestParsePostgreSQLInventory(t *testing.T) {
 	dbs := parsePostgreSQLInventory([]byte("appdb|1234567890\npostgres|8192\nignored\n"))
 
