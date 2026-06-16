@@ -2,36 +2,40 @@
 set -e
 
 case "$1" in
-  configure)
-    if ! getent passwd meerkat-agent >/dev/null; then
-      adduser --system --group --home /var/lib/meerkat-agent --no-create-home --disabled-login --quiet meerkat-agent
-    fi
+configure)
+	if ! getent passwd meerkat-agent >/dev/null; then
+		adduser --system --group --home /var/lib/meerkat-agent --no-create-home --disabled-login --quiet meerkat-agent
+	fi
 
-    install -d -o meerkat-agent -g meerkat-agent -m 0750 /var/lib/meerkat-agent
+	install -d -o meerkat-agent -g meerkat-agent -m 0750 /var/lib/meerkat-agent
 
-    if command -v runuser >/dev/null 2>&1; then
-      runuser -u meerkat-agent -- /usr/bin/meerkat-agent gen-cert --dir /var/lib/meerkat-agent >/dev/null
-      runuser -u meerkat-agent -- /usr/bin/meerkat-agent gen-token --dir /var/lib/meerkat-agent >/dev/null
-    else
-      su -s /bin/sh meerkat-agent -c '/usr/bin/meerkat-agent gen-cert --dir /var/lib/meerkat-agent' >/dev/null
-      su -s /bin/sh meerkat-agent -c '/usr/bin/meerkat-agent gen-token --dir /var/lib/meerkat-agent' >/dev/null
-    fi
+	if command -v runuser >/dev/null 2>&1; then
+		runuser -u meerkat-agent -- /usr/bin/meerkat-agent gen-cert --dir /var/lib/meerkat-agent >/dev/null
+		runuser -u meerkat-agent -- /usr/bin/meerkat-agent gen-token --dir /var/lib/meerkat-agent >/dev/null
+	else
+		su -s /bin/sh meerkat-agent -c '/usr/bin/meerkat-agent gen-cert --dir /var/lib/meerkat-agent' >/dev/null
+		su -s /bin/sh meerkat-agent -c '/usr/bin/meerkat-agent gen-token --dir /var/lib/meerkat-agent' >/dev/null
+	fi
 
-    if command -v systemctl >/dev/null 2>&1; then
-      systemctl daemon-reload || true
-      systemctl enable meerkat-agent.service || true
-      systemctl restart meerkat-agent.service || true
-    fi
+	if command -v systemctl >/dev/null 2>&1; then
+		systemctl daemon-reload || true
+		systemctl enable meerkat-agent.service || true
+		systemctl restart meerkat-agent.service || true
+	fi
 
-    echo
-    echo "Meerkat agent installed."
-    echo "Paste this into the Meerkat app:"
-    /usr/bin/meerkat-agent enroll --dir /var/lib/meerkat-agent || true
-    echo
-    echo "If the shown address is not reachable from your phone, run:"
-    echo "  sudo meerkat-agent enroll --addr YOUR_PUBLIC_IP_OR_DNS:8765"
-    echo
-    ;;
+	echo
+	echo "Meerkat agent installed."
+	echo "Paste this into the Meerkat app:"
+	if ! /usr/bin/meerkat-agent enroll --dir /var/lib/meerkat-agent; then
+		echo "meerkat-agent: warning: could not print enrollment details during install." >&2
+		echo "meerkat-agent: run this later after checking /var/lib/meerkat-agent permissions:" >&2
+		echo "  sudo meerkat-agent enroll --addr YOUR_PUBLIC_IP_OR_DNS:8765" >&2
+	fi
+	echo
+	echo "If the shown address is not reachable from your phone, run:"
+	echo "  sudo meerkat-agent enroll --addr YOUR_PUBLIC_IP_OR_DNS:8765"
+	echo
+	;;
 esac
 
 exit 0
