@@ -668,7 +668,7 @@ const mssqlMetadataInventoryQuery = `SET NOCOUNT ON; SELECT CONCAT(d.name, '|', 
 const mssqlSizeInventoryQuery = `SET NOCOUNT ON; SELECT DB_NAME(database_id) + '|' + CONVERT(varchar(32), CAST(SUM(size) * 8.0 / 1024 / 1024 AS decimal(18,3))) FROM sys.master_files WHERE database_id > 4 GROUP BY database_id ORDER BY DB_NAME(database_id);`
 
 func mssqlSQLCmdShell(username string, query string) string {
-	return fmt.Sprintf(`SQLCMD="$(command -v sqlcmd || command -v /opt/mssql-tools18/bin/sqlcmd || command -v /opt/mssql-tools/bin/sqlcmd)" && "$SQLCMD" -S localhost -U %s -C -b -l 5 -h -1 -W -w 65535 -y 0 -Y 0 -Q %s`,
+	return fmt.Sprintf(`SQLCMD="$(command -v sqlcmd || command -v /opt/mssql-tools18/bin/sqlcmd || command -v /opt/mssql-tools/bin/sqlcmd)" && "$SQLCMD" -S localhost -U %s -C -b -l 5 -h -1 -W -w 65535 -Q %s`,
 		shellQuote(username),
 		shellQuote(query),
 	)
