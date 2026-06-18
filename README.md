@@ -61,7 +61,9 @@ GitHub Actions secrets.
   that, the agent reports only readable cluster evidence.
 - The permanent apt signing key must be generated and backed up before public
   release. See [`docs/apt-signing-key.md`](docs/apt-signing-key.md).
-- Pro relay mode is not implemented in this repo yet.
+- Pro relay mode exists as a development CLI loop, but the packaged systemd
+  service still defaults to Free/direct `serve` mode until relay enrollment and
+  credentials are formalized.
 
 ---
 
@@ -96,6 +98,8 @@ sudo apt upgrade
 ```sh
 meerkat-agent once                      collect one snapshot and print JSON
 meerkat-agent serve [--addr][--dir]     serve HTTPS API, default :8765
+meerkat-agent relay --backend-url URL --server-id ID --user-profile-id ID
+                                        push snapshots to Meerkat relay
 meerkat-agent gen-cert [--dir]          generate TLS cert/key if absent
 meerkat-agent gen-token [--dir]         generate bearer token if absent
 meerkat-agent rotate-token [--dir]      replace token and print enrollment

@@ -4,6 +4,7 @@
 //
 //	meerkat-agent once                collect one snapshot and print JSON
 //	meerkat-agent serve [--addr][--dir] serve GET /v1/status over HTTPS
+//	meerkat-agent relay               push snapshots outbound to Meerkat relay
 //	meerkat-agent gen-cert [--dir]    generate the TLS cert/key if absent (install)
 //	meerkat-agent gen-token [--dir]   generate the bearer token if absent (install)
 //	meerkat-agent rotate-token [--dir][--addr] replace token and print enrollment
@@ -15,17 +16,21 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/AndiOliverIon/meerkat-agent/internal/collect"
 	agentconfig "github.com/AndiOliverIon/meerkat-agent/internal/config"
 	"github.com/AndiOliverIon/meerkat-agent/internal/identity"
+	"github.com/AndiOliverIon/meerkat-agent/internal/relay"
 	"github.com/AndiOliverIon/meerkat-agent/internal/server"
 )
 
@@ -55,6 +60,25 @@ func main() {
 		}
 		if err := srv.Run(); err != nil {
 			fatal("serve:", err)
+		}
+
+	case "relay":
+		fs := flag.NewFlagSet("relay", flag.ExitOnError)
+		dir := fs.String("dir", identity.DefaultDir, "identity/config dir")
+		backendURL := fs.String("backend-url", "", "Meerkat backend base URL")
+		serverID := fs.String("server-id", "", "Meerkat backend server id")
+		userProfileID := fs.String("user-profile-id", "", "temporary dev user profile id")
+		_ = fs.Parse(os.Args[2:])
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		runner := relay.Runner{
+			BackendURL:    *backendURL,
+			ServerID:      *serverID,
+			UserProfileID: *userProfileID,
+			Collector:     collect.New(*dir),
+		}
+		if err := runner.Run(ctx); err != nil {
+			fatal("relay:", err)
 		}
 
 	case "gen-cert":
@@ -233,6 +257,7 @@ func usage() {
 usage:
   meerkat-agent once                 collect one snapshot and print JSON
   meerkat-agent serve [--addr][--dir] serve GET /v1/status over HTTPS (default :8765)
+  meerkat-agent relay --backend-url URL --server-id ID --user-profile-id ID [--dir] push snapshots to Meerkat relay
   meerkat-agent gen-cert [--dir]     generate the TLS cert/key if absent (install hook)
   meerkat-agent gen-token [--dir]    generate the bearer token if absent (install hook)
   meerkat-agent rotate-token [--dir][--addr] replace token and print enrollment details
