@@ -52,7 +52,7 @@ GitHub Actions secrets.
 | System metrics | `/proc`, `statfs`, `/proc/loadavg` | CPU, memory, disk, and load average. |
 | Docker containers | Docker API over `/var/run/docker.sock` | State, health, restart count, ports, timestamps, exit code, OOM flag, error text. Unknown lifecycle values are `null`, not fake zeroes. |
 | PostgreSQL | local `psql` when available, plus known data dirs | Reports per-database names/sizes when local read-only access works; otherwise reports readable cluster evidence. |
-| MSSQL in Docker | Docker metadata + mounted data files + optional SQL credentials | Reports mounted database files when readable; optional read-only SQL credentials can improve inventory. |
+| MSSQL in Docker | Docker metadata + mounted data files + optional SQL credentials | Reports mounted database files when readable; optional SQL credentials can improve database inventory and SQL memory-pressure signals. |
 | Endpoints | nginx / Apache / Caddy config | Names only. The agent does not probe endpoints in Free v1. |
 
 ## Important known gaps
@@ -192,12 +192,15 @@ The agent then:
 
 - tests the credentials with a read-only metadata query;
 - stores them locally on the VPS in `/var/lib/meerkat-agent`, mode `0600`;
-- uses them only to list database names and sizes;
+- uses them only to list database names/sizes and read SQL Server memory-pressure DMVs;
 - never returns the password from the API.
 
 Use a dedicated read-only monitoring login, not an administrator password.
 This is agent configuration, not a server action: the app does not restart
 services, mutate databases, or execute user workload changes.
+SQL memory-pressure signals may require the monitoring login to have
+`VIEW SERVER STATE`; without that permission the agent omits `sqlServers`
+rather than guessing.
 
 To revoke stored MSSQL inventory credentials later:
 
@@ -261,6 +264,7 @@ High-level shape:
   "load": { "one": 0.1, "five": 0.2, "fifteen": 0.2 },
   "containers": [],
   "databases": [],
+  "sqlServers": [],
   "endpoints": []
 }
 ```

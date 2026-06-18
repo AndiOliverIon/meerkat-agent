@@ -55,10 +55,12 @@ func (c *Collector) Snapshot() model.Snapshot {
 	// it runs outside the collector lock to keep concurrent reads responsive.
 	containers := readContainers()
 	databases := readDatabases(c.stateDir, containers)
+	sqlServers := readSQLServers(c.stateDir, containers)
 	endpoints := readEndpoints()
 
 	snap.Containers = containers
 	snap.Databases = databases
+	snap.SQLServers = sqlServers
 	snap.Endpoints = endpoints
 	return snap
 }

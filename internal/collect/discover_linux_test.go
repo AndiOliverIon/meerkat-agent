@@ -28,6 +28,48 @@ func TestMSSQLDatabaseNameFromFile(t *testing.T) {
 	}
 }
 
+func TestParseMSSQLPressureKeepsTargetRatioDiagnostic(t *testing.T) {
+	got, err := parseMSSQLPressure("sql-a", []byte("vps1|1900|2048|2048|0|0|1200\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "ok" {
+		t.Fatalf("status = %q, want ok", got.Status)
+	}
+	if got.MemoryUsedPercentOfTarget == nil || *got.MemoryUsedPercentOfTarget != 92.8 {
+		t.Fatalf("memory used percent = %v, want 92.8", got.MemoryUsedPercentOfTarget)
+	}
+	if len(got.Signals) != 0 {
+		t.Fatalf("signals = %#v", got.Signals)
+	}
+}
+
+func TestParseMSSQLPressureWarnsOnLowPageLifeExpectancy(t *testing.T) {
+	got, err := parseMSSQLPressure("sql-a", []byte("vps1|1300|2048|2048|0|0|120\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "warn" {
+		t.Fatalf("status = %q, want warn", got.Status)
+	}
+	if len(got.Signals) != 1 || got.Signals[0] != "Page life expectancy is 120s" {
+		t.Fatalf("signals = %#v", got.Signals)
+	}
+}
+
+func TestParseMSSQLPressureCriticalOnLowMemorySignal(t *testing.T) {
+	got, err := parseMSSQLPressure("sql-a", []byte("vps1|1300|2048|2048|1|0|1200\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "critical" {
+		t.Fatalf("status = %q, want critical", got.Status)
+	}
+	if got.ProcessPhysicalMemoryLow == nil || !*got.ProcessPhysicalMemoryLow {
+		t.Fatalf("process low memory = %v, want true", got.ProcessPhysicalMemoryLow)
+	}
+}
+
 func TestScanMSSQLDataDirSkipsSystemDatabases(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{

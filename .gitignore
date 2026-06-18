@@ -2,6 +2,7 @@
 /meerkat-agent
 /bin/
 /dist/
+/.dist/
 *.exe
 *.test
 *.out

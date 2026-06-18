@@ -324,6 +324,34 @@ func readDatabases(stateDir string, containers []model.Container) []model.Databa
 	return out
 }
 
+// readSQLServers reports SQL Server instance-level pressure for configured
+// MSSQL containers. DMV access requires the same local SQL credentials already
+// used for deeper MSSQL inventory.
+func readSQLServers(stateDir string, containers []model.Container) []model.SQLServer {
+	mssqlConfigs := loadMSSQLConfigMap(stateDir)
+	var out []model.SQLServer
+	for _, c := range containers {
+		if !isMSSQLContainer(c) {
+			continue
+		}
+		cfg, ok := mssqlConfigs[c.Name]
+		if !ok {
+			continue
+		}
+		pressure, err := readMSSQLContainerPressure(c.Name, cfg.Username, cfg.Password)
+		if err != nil {
+			log.Printf("mssql pressure inventory for container %q failed: %v", c.Name, err)
+			continue
+		}
+		out = append(out, pressure)
+	}
+	if out == nil {
+		return []model.SQLServer{}
+	}
+	sort.Slice(out, func(a, b int) bool { return out[a].Name < out[b].Name })
+	return out
+}
+
 func readPostgreSQLDatabases(db dbEngine, procs map[string]bool) []model.Database {
 	running := false
 	for _, p := range db.procs {
@@ -663,15 +691,128 @@ func readMSSQLContainerDatabaseSizes(container, username, password string) ([]mo
 	return dbs, nil
 }
 
+func readMSSQLContainerPressure(container, username, password string) (model.SQLServer, error) {
+	output, err := dockerExec(container, []string{
+		"sh", "-c", mssqlSQLCmdShell(username, mssqlMemoryPressureQuery),
+	}, []string{"SQLCMDPASSWORD=" + password})
+	if err != nil {
+		return model.SQLServer{}, err
+	}
+	pressure, err := parseMSSQLPressure(container, output)
+	if err != nil {
+		return model.SQLServer{}, err
+	}
+	return pressure, nil
+}
+
 const mssqlMetadataInventoryQuery = `SET NOCOUNT ON; SELECT CONCAT(d.name, '|', CONVERT(varchar(32), CAST(SUM(mf.size) * 8.0 / 1024 / 1024 AS decimal(18,3))), '|', COALESCE(d.state_desc, ''), '|', COALESCE(d.recovery_model_desc, ''), '|', CONVERT(varchar(33), d.create_date, 126)) FROM sys.databases d JOIN sys.master_files mf ON mf.database_id = d.database_id WHERE d.database_id > 4 GROUP BY d.name, d.state_desc, d.recovery_model_desc, d.create_date ORDER BY d.name;`
 
 const mssqlSizeInventoryQuery = `SET NOCOUNT ON; SELECT DB_NAME(database_id) + '|' + CONVERT(varchar(32), CAST(SUM(size) * 8.0 / 1024 / 1024 AS decimal(18,3))) FROM sys.master_files WHERE database_id > 4 GROUP BY database_id ORDER BY DB_NAME(database_id);`
+
+const mssqlMemoryPressureQuery = `SET NOCOUNT ON; SELECT CONCAT(COALESCE(CONVERT(varchar(128), SERVERPROPERTY('ServerName')), @@SERVERNAME), '|', CONVERT(varchar(32), CAST((SELECT physical_memory_in_use_kb / 1024.0 FROM sys.dm_os_process_memory) AS decimal(18,1))), '|', CONVERT(varchar(32), CAST((SELECT committed_target_kb / 1024.0 FROM sys.dm_os_sys_info) AS decimal(18,1))), '|', CONVERT(varchar(32), CAST((SELECT value_in_use FROM sys.configurations WHERE name = 'max server memory (MB)') AS decimal(18,1))), '|', CONVERT(varchar(1), (SELECT process_physical_memory_low FROM sys.dm_os_process_memory)), '|', CONVERT(varchar(1), (SELECT system_low_memory_signal_state FROM sys.dm_os_sys_memory)), '|', COALESCE(CONVERT(varchar(32), (SELECT TOP 1 cntr_value FROM sys.dm_os_performance_counters WHERE counter_name = 'Page life expectancy' AND object_name LIKE '%Buffer Manager%')), ''));`
 
 func mssqlSQLCmdShell(username string, query string) string {
 	return fmt.Sprintf(`SQLCMD="$(command -v sqlcmd || command -v /opt/mssql-tools18/bin/sqlcmd || command -v /opt/mssql-tools/bin/sqlcmd)" && "$SQLCMD" -S localhost -U %s -C -b -l 5 -h -1 -W -w 65535 -Q %s`,
 		shellQuote(username),
 		shellQuote(query),
 	)
+}
+
+func parseMSSQLPressure(container string, output []byte) (model.SQLServer, error) {
+	scanner := bufio.NewScanner(bytes.NewReader(output))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "(") {
+			continue
+		}
+		parts := strings.Split(line, "|")
+		if len(parts) != 7 {
+			continue
+		}
+		name := strings.TrimSpace(parts[0])
+		if name == "" {
+			name = container
+		}
+		pressure := model.SQLServer{
+			Name:      name,
+			Container: container,
+			Status:    "ok",
+			Signals:   []string{},
+		}
+		pressure.MemoryUsedMB = parseOptionalFloat(parts[1])
+		pressure.MemoryTargetMB = parseOptionalFloat(parts[2])
+		pressure.MemoryLimitMB = parseOptionalFloat(parts[3])
+		pressure.ProcessPhysicalMemoryLow = parseOptionalBool(parts[4])
+		pressure.SystemPhysicalMemoryLow = parseOptionalBool(parts[5])
+		pressure.PageLifeExpectancySeconds = parseOptionalFloat(parts[6])
+		pressure.MemoryUsedPercentOfTarget = memoryUsedPercentOfTarget(pressure.MemoryUsedMB, pressure.MemoryTargetMB, pressure.MemoryLimitMB)
+		pressure.Status, pressure.Signals = sqlMemoryPressureStatus(pressure)
+		return pressure, nil
+	}
+	if err := scanner.Err(); err != nil {
+		return model.SQLServer{}, err
+	}
+	return model.SQLServer{}, errors.New("mssql pressure inventory returned no parseable rows")
+}
+
+func memoryUsedPercentOfTarget(usedMB, targetMB, limitMB *float64) *float64 {
+	target := 0.0
+	if targetMB != nil && *targetMB > 0 {
+		target = *targetMB
+	}
+	if limitMB != nil && *limitMB > 0 && *limitMB < 2_000_000 && (target == 0 || *limitMB < target) {
+		target = *limitMB
+	}
+	if usedMB == nil || target <= 0 {
+		return nil
+	}
+	pct := round1(100 * *usedMB / target)
+	return &pct
+}
+
+func sqlMemoryPressureStatus(pressure model.SQLServer) (string, []string) {
+	status := "ok"
+	var signals []string
+	if pressure.ProcessPhysicalMemoryLow != nil && *pressure.ProcessPhysicalMemoryLow {
+		status = "critical"
+		signals = append(signals, "SQL Server process reports low physical memory")
+	}
+	if pressure.SystemPhysicalMemoryLow != nil && *pressure.SystemPhysicalMemoryLow {
+		status = "critical"
+		signals = append(signals, "Host reports low physical memory to SQL Server")
+	}
+	if pressure.PageLifeExpectancySeconds != nil && *pressure.PageLifeExpectancySeconds > 0 && *pressure.PageLifeExpectancySeconds < 300 {
+		if status != "critical" {
+			status = "warn"
+		}
+		signals = append(signals, fmt.Sprintf("Page life expectancy is %.0fs", *pressure.PageLifeExpectancySeconds))
+	}
+	if signals == nil {
+		signals = []string{}
+	}
+	return status, signals
+}
+
+func parseOptionalFloat(raw string) *float64 {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return nil
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return nil
+	}
+	rounded := round1(parsed)
+	return &rounded
+}
+
+func parseOptionalBool(raw string) *bool {
+	value := strings.TrimSpace(strings.ToLower(raw))
+	if value == "" {
+		return nil
+	}
+	parsed := value == "1" || value == "true"
+	return &parsed
 }
 
 func parseMSSQLInventory(output []byte) []model.Database {

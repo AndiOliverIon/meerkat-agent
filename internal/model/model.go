@@ -28,6 +28,7 @@ type Snapshot struct {
 	Load         *Load       `json:"load"`   // null if not obtained
 	Containers   []Container `json:"containers"`
 	Databases    []Database  `json:"databases"`
+	SQLServers   []SQLServer `json:"sqlServers"`
 	Endpoints    []Endpoint  `json:"endpoints"`
 }
 
@@ -83,6 +84,21 @@ type Database struct {
 	State         *string    `json:"state,omitempty"`
 	RecoveryModel *string    `json:"recoveryModel,omitempty"`
 	CreatedAt     *time.Time `json:"createdAt,omitempty"`
+}
+
+// SQLServer reports SQL Server instance-level pressure signals.
+type SQLServer struct {
+	Name                      string   `json:"name"`
+	Container                 string   `json:"container,omitempty"`
+	Status                    string   `json:"status"` // ok | warn | critical
+	MemoryUsedMB              *float64 `json:"memoryUsedMB,omitempty"`
+	MemoryTargetMB            *float64 `json:"memoryTargetMB,omitempty"`
+	MemoryLimitMB             *float64 `json:"memoryLimitMB,omitempty"`
+	MemoryUsedPercentOfTarget *float64 `json:"memoryUsedPercentOfTarget,omitempty"`
+	PageLifeExpectancySeconds *float64 `json:"pageLifeExpectancySeconds,omitempty"`
+	ProcessPhysicalMemoryLow  *bool    `json:"processPhysicalMemoryLow,omitempty"`
+	SystemPhysicalMemoryLow   *bool    `json:"systemPhysicalMemoryLow,omitempty"`
+	Signals                   []string `json:"signals"`
 }
 
 // Endpoint is a hostname/domain detected from supported web-server config.

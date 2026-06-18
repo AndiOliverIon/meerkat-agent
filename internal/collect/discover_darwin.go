@@ -14,9 +14,10 @@ import (
 // slices, since on Darwin we genuinely did not collect this data (vs.
 // "collected, found none").
 
-func readContainers() []model.Container                        { return nil }
-func readDatabases(string, []model.Container) []model.Database { return nil }
-func readEndpoints() []model.Endpoint                          { return nil }
+func readContainers() []model.Container                          { return nil }
+func readDatabases(string, []model.Container) []model.Database   { return nil }
+func readSQLServers(string, []model.Container) []model.SQLServer { return nil }
+func readEndpoints() []model.Endpoint                            { return nil }
 func TestMSSQLInventory(string, string, string) ([]model.Database, error) {
 	return nil, errors.New("mssql inventory is only supported on linux")
 }

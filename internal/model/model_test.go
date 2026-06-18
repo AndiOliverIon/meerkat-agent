@@ -43,6 +43,7 @@ func TestContractNullVsZeroVsEmpty(t *testing.T) {
 	mustContain := []string{
 		`"memory":null`,        // not obtained
 		`"databases":null`,     // not obtained
+		`"sqlServers":null`,    // not obtained
 		`"uptimeSeconds":null`, // not obtained
 		`"state":"running"`,    // Docker state is factual
 		`"health":"healthy"`,   // Docker health if exposed
