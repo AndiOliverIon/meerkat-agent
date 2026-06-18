@@ -11,6 +11,7 @@
 //	meerkat-agent rotate-cert [--dir][--addr] replace TLS cert/key and print enrollment
 //	meerkat-agent fingerprint [--dir] print the TLS cert fingerprint
 //	meerkat-agent enroll [--dir][--addr] print the app enrollment details
+//	meerkat-agent config relay set [--dir][--backend-url][--server-id][--user-profile-id]
 //	meerkat-agent config remove-mssql [--dir] <container>
 //	meerkat-agent version             print the agent version
 package main
@@ -69,12 +70,25 @@ func main() {
 		serverID := fs.String("server-id", "", "Meerkat backend server id")
 		userProfileID := fs.String("user-profile-id", "", "temporary dev user profile id")
 		_ = fs.Parse(os.Args[2:])
+		cfg, err := agentconfig.LoadRelayConfig(*dir)
+		if err != nil && !errors.Is(err, agentconfig.ErrRelayConfigNotFound) {
+			fatal("relay:", err)
+		}
+		if *backendURL != "" {
+			cfg.BackendURL = *backendURL
+		}
+		if *serverID != "" {
+			cfg.ServerID = *serverID
+		}
+		if *userProfileID != "" {
+			cfg.UserProfileID = *userProfileID
+		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		runner := relay.Runner{
-			BackendURL:    *backendURL,
-			ServerID:      *serverID,
-			UserProfileID: *userProfileID,
+			BackendURL:    cfg.BackendURL,
+			ServerID:      cfg.ServerID,
+			UserProfileID: cfg.UserProfileID,
 			Collector:     collect.New(*dir),
 		}
 		if err := runner.Run(ctx); err != nil {
@@ -166,6 +180,9 @@ func configCommand(args []string) {
 		os.Exit(2)
 	}
 	switch args[0] {
+	case "relay":
+		relayConfigCommand(args[1:])
+
 	case "remove-mssql":
 		fs := flag.NewFlagSet("config remove-mssql", flag.ExitOnError)
 		dir := fs.String("dir", identity.DefaultDir, "identity dir (cert/key/token/config)")
@@ -181,6 +198,66 @@ func configCommand(args []string) {
 			fatal("config remove-mssql:", err)
 		}
 		fmt.Println("meerkat-agent: removed MSSQL inventory config for", container)
+
+	default:
+		usage()
+		os.Exit(2)
+	}
+}
+
+func relayConfigCommand(args []string) {
+	if len(args) < 1 {
+		usage()
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "set":
+		fs := flag.NewFlagSet("config relay set", flag.ExitOnError)
+		dir := fs.String("dir", identity.DefaultDir, "identity dir (cert/key/token/config)")
+		backendURL := fs.String("backend-url", "", "Meerkat backend base URL")
+		serverID := fs.String("server-id", "", "Meerkat backend server id")
+		userProfileID := fs.String("user-profile-id", "", "temporary dev user profile id")
+		_ = fs.Parse(args[1:])
+		cfg := agentconfig.RelayConfig{
+			BackendURL:    *backendURL,
+			ServerID:      *serverID,
+			UserProfileID: *userProfileID,
+		}
+		if err := agentconfig.SaveRelayConfig(*dir, cfg); err != nil {
+			fatal("config relay set:", err)
+		}
+		fmt.Println("meerkat-agent: saved relay config to", agentconfig.RelayConfigPath(*dir))
+		fmt.Println("meerkat-agent: enable relay mode with:")
+		fmt.Println("  sudo systemctl enable --now meerkat-agent-relay")
+
+	case "show":
+		fs := flag.NewFlagSet("config relay show", flag.ExitOnError)
+		dir := fs.String("dir", identity.DefaultDir, "identity dir (cert/key/token/config)")
+		_ = fs.Parse(args[1:])
+		cfg, err := agentconfig.LoadRelayConfig(*dir)
+		if err != nil {
+			if errors.Is(err, agentconfig.ErrRelayConfigNotFound) {
+				fatal("config relay show: relay config is not configured")
+			}
+			fatal("config relay show:", err)
+		}
+		out, err := json.MarshalIndent(cfg, "", "  ")
+		if err != nil {
+			fatal("config relay show:", err)
+		}
+		fmt.Println(string(out))
+
+	case "remove":
+		fs := flag.NewFlagSet("config relay remove", flag.ExitOnError)
+		dir := fs.String("dir", identity.DefaultDir, "identity dir (cert/key/token/config)")
+		_ = fs.Parse(args[1:])
+		if err := agentconfig.RemoveRelayConfig(*dir); err != nil {
+			if errors.Is(err, agentconfig.ErrRelayConfigNotFound) {
+				fatal("config relay remove: relay config is not configured")
+			}
+			fatal("config relay remove:", err)
+		}
+		fmt.Println("meerkat-agent: removed relay config from", agentconfig.RelayConfigPath(*dir))
 
 	default:
 		usage()
@@ -264,6 +341,9 @@ usage:
   meerkat-agent rotate-cert [--dir][--addr] replace TLS cert/key and print enrollment details
   meerkat-agent fingerprint [--dir]  print the TLS cert fingerprint
   meerkat-agent enroll [--dir][--addr] print the app enrollment details
+  meerkat-agent config relay set --backend-url URL --server-id ID --user-profile-id ID [--dir]
+  meerkat-agent config relay show [--dir]
+  meerkat-agent config relay remove [--dir]
   meerkat-agent config remove-mssql [--dir] <container>
   meerkat-agent version              print version`)
 }

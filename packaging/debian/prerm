@@ -3,6 +3,8 @@ set -e
 
 if [ "$1" = "remove" ] || [ "$1" = "deconfigure" ]; then
   if command -v systemctl >/dev/null 2>&1; then
+    systemctl stop meerkat-agent-relay.service || true
+    systemctl disable meerkat-agent-relay.service || true
     systemctl stop meerkat-agent.service || true
     systemctl disable meerkat-agent.service || true
   fi

@@ -36,3 +36,34 @@ func TestRemoveMSSQLInventory(t *testing.T) {
 		t.Fatalf("config file stat err = %v, want not exist", err)
 	}
 }
+
+func TestRelayConfigRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+
+	cfg := RelayConfig{
+		BackendURL:    " http://127.0.0.1:5281 ",
+		ServerID:      " server-1 ",
+		UserProfileID: " profile-1 ",
+	}
+	if err := SaveRelayConfig(dir, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := LoadRelayConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.BackendURL != "http://127.0.0.1:5281" || got.ServerID != "server-1" || got.UserProfileID != "profile-1" {
+		t.Fatalf("relay config = %#v", got)
+	}
+	if got.UpdatedAt.IsZero() {
+		t.Fatal("UpdatedAt was not set")
+	}
+
+	if err := RemoveRelayConfig(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadRelayConfig(dir); !errors.Is(err, ErrRelayConfigNotFound) {
+		t.Fatalf("load after remove err = %v, want ErrRelayConfigNotFound", err)
+	}
+}

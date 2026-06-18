@@ -26,6 +26,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" go build \
   ./cmd/meerkat-agent
 
 install -m 0644 "$ROOT/packaging/systemd/meerkat-agent.service" "$PKG_DIR/lib/systemd/system/meerkat-agent.service"
+install -m 0644 "$ROOT/packaging/systemd/meerkat-agent-relay.service" "$PKG_DIR/lib/systemd/system/meerkat-agent-relay.service"
 
 sed \
   -e "s/\${VERSION}/$VERSION/g" \

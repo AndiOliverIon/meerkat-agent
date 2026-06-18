@@ -98,7 +98,7 @@ sudo apt upgrade
 ```sh
 meerkat-agent once                      collect one snapshot and print JSON
 meerkat-agent serve [--addr][--dir]     serve HTTPS API, default :8765
-meerkat-agent relay --backend-url URL --server-id ID --user-profile-id ID
+meerkat-agent relay [--dir] [--backend-url URL --server-id ID --user-profile-id ID]
                                         push snapshots to Meerkat relay
 meerkat-agent gen-cert [--dir]          generate TLS cert/key if absent
 meerkat-agent gen-token [--dir]         generate bearer token if absent
@@ -107,6 +107,9 @@ meerkat-agent rotate-cert [--dir]       replace TLS cert/key and print enrollmen
 meerkat-agent fingerprint [--dir]       print TLS cert fingerprint
 meerkat-agent enroll [--dir][--addr]    print app enrollment details
 meerkat-agent config remove-mssql [--dir] <container>
+meerkat-agent config relay set --backend-url URL --server-id ID --user-profile-id ID
+meerkat-agent config relay show [--dir]
+meerkat-agent config relay remove [--dir]
 meerkat-agent version                   print version
 ```
 
@@ -124,6 +127,43 @@ meerkat-agent serve --addr :8765
 | `DELETE /v1/config/mssql/{container}` | bearer token | removes stored MSSQL inventory credentials |
 
 `/v1/status` is served over HTTPS with the agent's self-signed certificate.
+
+### Relay
+
+Relay mode pushes snapshots outbound to the Meerkat backend. This is the Pro
+path: the VPS agent remains the source of truth, and the relay stores the latest
+snapshot for the app to read.
+
+Configure relay identity on the VPS:
+
+```sh
+sudo meerkat-agent config relay set \
+  --backend-url https://api.meerkat.tnisoft.ro \
+  --server-id SERVER_ID \
+  --user-profile-id USER_PROFILE_ID
+```
+
+Start the supervised relay service:
+
+```sh
+sudo systemctl enable --now meerkat-agent-relay
+```
+
+The package installs `meerkat-agent-relay.service` separately from
+`meerkat-agent.service`. The direct service can continue serving Free/direct
+mode on port `8765`, while the relay service continuously pushes snapshots.
+The relay service starts only when `/var/lib/meerkat-agent/relay.json` exists
+and uses `Restart=always` so systemd brings it back after failures.
+
+For development or one-off tests, relay values can be passed as flags instead
+of saving config:
+
+```sh
+meerkat-agent relay \
+  --backend-url http://127.0.0.1:5281 \
+  --server-id SERVER_ID \
+  --user-profile-id USER_PROFILE_ID
+```
 
 ### Optional MSSQL inventory
 

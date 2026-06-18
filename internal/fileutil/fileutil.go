@@ -3,15 +3,23 @@ package fileutil
 
 import (
 	"os"
+	"path/filepath"
 	"syscall"
 )
 
 // WriteFilePreserveOwner atomically replaces path, applies perm explicitly, and
-// keeps the existing owner when the file already exists.
+// keeps the existing owner when the file already exists. For new files, it uses
+// the parent directory owner so sudo-run config commands still create files the
+// service user can read.
 func WriteFilePreserveOwner(path string, data []byte, perm os.FileMode) error {
 	var uid, gid int
 	preserveOwner := false
 	if info, err := os.Stat(path); err == nil {
+		if st, ok := info.Sys().(*syscall.Stat_t); ok {
+			uid, gid = int(st.Uid), int(st.Gid)
+			preserveOwner = true
+		}
+	} else if info, err := os.Stat(filepath.Dir(path)); err == nil {
 		if st, ok := info.Sys().(*syscall.Stat_t); ok {
 			uid, gid = int(st.Uid), int(st.Gid)
 			preserveOwner = true

@@ -1,0 +1,31 @@
+[Unit]
+Description=Meerkat Agent Relay
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/var/lib/meerkat-agent/relay.json
+
+[Service]
+Type=simple
+User=meerkat-agent
+Group=meerkat-agent
+WorkingDirectory=/var/lib/meerkat-agent
+ExecStart=/usr/bin/meerkat-agent relay --dir /var/lib/meerkat-agent
+Restart=always
+RestartSec=10s
+TimeoutStopSec=15s
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictNamespaces=true
+ReadWritePaths=/var/lib/meerkat-agent
+
+[Install]
+WantedBy=multi-user.target

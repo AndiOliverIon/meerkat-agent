@@ -15,11 +15,13 @@ import (
 )
 
 const mssqlFile = "mssql-inventory.json"
+const relayFile = "relay.json"
 const maxMSSQLInventories = 25
 
 var mssqlInventoryMu sync.Mutex
 
 var ErrMSSQLInventoryNotFound = errors.New("mssql inventory config not found")
+var ErrRelayConfigNotFound = errors.New("relay config not found")
 
 type MSSQLInventory struct {
 	Container string    `json:"container"`
@@ -34,8 +36,73 @@ type MSSQLInventorySummary struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
+type RelayConfig struct {
+	BackendURL    string    `json:"backendUrl"`
+	ServerID      string    `json:"serverId"`
+	UserProfileID string    `json:"userProfileId"`
+	UpdatedAt     time.Time `json:"updatedAt"`
+}
+
 func MSSQLInventoryPath(dir string) string {
 	return filepath.Join(dir, mssqlFile)
+}
+
+func RelayConfigPath(dir string) string {
+	return filepath.Join(dir, relayFile)
+}
+
+func LoadRelayConfig(dir string) (RelayConfig, error) {
+	data, err := os.ReadFile(RelayConfigPath(dir))
+	if errors.Is(err, os.ErrNotExist) {
+		return RelayConfig{}, ErrRelayConfigNotFound
+	}
+	if err != nil {
+		return RelayConfig{}, err
+	}
+	var cfg RelayConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return RelayConfig{}, err
+	}
+	cfg.trim()
+	return cfg, nil
+}
+
+func SaveRelayConfig(dir string, cfg RelayConfig) error {
+	cfg.trim()
+	if cfg.BackendURL == "" {
+		return errors.New("backend url is required")
+	}
+	if cfg.ServerID == "" {
+		return errors.New("server id is required")
+	}
+	if cfg.UserProfileID == "" {
+		return errors.New("user profile id is required")
+	}
+	cfg.UpdatedAt = time.Now().UTC()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	return fileutil.WriteFilePreserveOwner(RelayConfigPath(dir), data, 0o600)
+}
+
+func RemoveRelayConfig(dir string) error {
+	if err := os.Remove(RelayConfigPath(dir)); errors.Is(err, os.ErrNotExist) {
+		return ErrRelayConfigNotFound
+	} else if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (cfg *RelayConfig) trim() {
+	cfg.BackendURL = strings.TrimSpace(cfg.BackendURL)
+	cfg.ServerID = strings.TrimSpace(cfg.ServerID)
+	cfg.UserProfileID = strings.TrimSpace(cfg.UserProfileID)
 }
 
 func LoadMSSQLInventories(dir string) ([]MSSQLInventory, error) {

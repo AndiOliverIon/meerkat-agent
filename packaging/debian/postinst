@@ -21,6 +21,10 @@ configure)
 		systemctl daemon-reload || true
 		systemctl enable meerkat-agent.service || true
 		systemctl restart meerkat-agent.service || true
+		if [ -f /var/lib/meerkat-agent/relay.json ]; then
+			systemctl enable meerkat-agent-relay.service || true
+			systemctl restart meerkat-agent-relay.service || true
+		fi
 	fi
 
 	echo
