@@ -61,9 +61,9 @@ GitHub Actions secrets.
   that, the agent reports only readable cluster evidence.
 - The permanent apt signing key must be generated and backed up before public
   release. See [`docs/apt-signing-key.md`](docs/apt-signing-key.md).
-- Pro relay mode exists as a development CLI loop, but the packaged systemd
-  service still defaults to Free/direct `serve` mode until relay enrollment and
-  credentials are formalized.
+- Pro relay mode has a supervised service and one-time enrollment code flow.
+  Relay credentials are still development-grade and must be hardened before
+  production telemetry.
 
 ---
 
@@ -107,6 +107,7 @@ meerkat-agent rotate-cert [--dir]       replace TLS cert/key and print enrollmen
 meerkat-agent fingerprint [--dir]       print TLS cert fingerprint
 meerkat-agent enroll [--dir][--addr]    print app enrollment details
 meerkat-agent config remove-mssql [--dir] <container>
+meerkat-agent config relay set --enrollment-code CODE [--dir]
 meerkat-agent config relay set --backend-url URL --server-id ID --user-profile-id ID
 meerkat-agent config relay show [--dir]
 meerkat-agent config relay remove [--dir]
@@ -128,6 +129,20 @@ meerkat-agent serve --addr :8765
 
 `/v1/status` is served over HTTPS with the agent's self-signed certificate.
 
+### Relay enrollment
+
+For Pro relay mode, generate the server-scoped command from the Meerkat app and
+run it on the VPS:
+
+```sh
+sudo meerkat-agent config relay set --enrollment-code CODE
+sudo systemctl enable meerkat-agent-relay
+sudo systemctl restart meerkat-agent-relay
+```
+
+Enrollment codes are short-lived and single-use. If the command fails after the
+backend accepts the code, create a fresh command in the app and run it again.
+
 ### Relay
 
 Relay mode pushes snapshots outbound to the Meerkat backend. This is the Pro
@@ -146,7 +161,8 @@ sudo meerkat-agent config relay set \
 Start the supervised relay service:
 
 ```sh
-sudo systemctl enable --now meerkat-agent-relay
+sudo systemctl enable meerkat-agent-relay
+sudo systemctl restart meerkat-agent-relay
 ```
 
 The package installs `meerkat-agent-relay.service` separately from

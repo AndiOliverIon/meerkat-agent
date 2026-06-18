@@ -11,7 +11,7 @@
 //	meerkat-agent rotate-cert [--dir][--addr] replace TLS cert/key and print enrollment
 //	meerkat-agent fingerprint [--dir] print the TLS cert fingerprint
 //	meerkat-agent enroll [--dir][--addr] print the app enrollment details
-//	meerkat-agent config relay set [--dir][--backend-url][--server-id][--user-profile-id]
+//	meerkat-agent config relay set [--dir][--enrollment-code]
 //	meerkat-agent config remove-mssql [--dir] <container>
 //	meerkat-agent version             print the agent version
 package main
@@ -214,21 +214,35 @@ func relayConfigCommand(args []string) {
 	case "set":
 		fs := flag.NewFlagSet("config relay set", flag.ExitOnError)
 		dir := fs.String("dir", identity.DefaultDir, "identity dir (cert/key/token/config)")
+		enrollmentCode := fs.String("enrollment-code", "", "Meerkat relay enrollment code")
 		backendURL := fs.String("backend-url", "", "Meerkat backend base URL")
 		serverID := fs.String("server-id", "", "Meerkat backend server id")
 		userProfileID := fs.String("user-profile-id", "", "temporary dev user profile id")
 		_ = fs.Parse(args[1:])
-		cfg := agentconfig.RelayConfig{
-			BackendURL:    *backendURL,
-			ServerID:      *serverID,
-			UserProfileID: *userProfileID,
+		var cfg agentconfig.RelayConfig
+		if strings.TrimSpace(*enrollmentCode) != "" {
+			fingerprint := ""
+			if fp, err := identity.Fingerprint(*dir); err == nil {
+				fingerprint = fp
+			}
+			var err error
+			cfg, err = relay.ConsumeEnrollmentCode(context.Background(), *enrollmentCode, fingerprint, collect.Version, nil)
+			if err != nil {
+				fatal("config relay set:", err)
+			}
+		} else {
+			cfg = agentconfig.RelayConfig{
+				BackendURL:    *backendURL,
+				ServerID:      *serverID,
+				UserProfileID: *userProfileID,
+			}
 		}
 		if err := agentconfig.SaveRelayConfig(*dir, cfg); err != nil {
 			fatal("config relay set:", err)
 		}
 		fmt.Println("meerkat-agent: saved relay config to", agentconfig.RelayConfigPath(*dir))
 		fmt.Println("meerkat-agent: enable relay mode with:")
-		fmt.Println("  sudo systemctl enable --now meerkat-agent-relay")
+		fmt.Println("  sudo systemctl enable meerkat-agent-relay && sudo systemctl restart meerkat-agent-relay")
 
 	case "show":
 		fs := flag.NewFlagSet("config relay show", flag.ExitOnError)
@@ -341,6 +355,7 @@ usage:
   meerkat-agent rotate-cert [--dir][--addr] replace TLS cert/key and print enrollment details
   meerkat-agent fingerprint [--dir]  print the TLS cert fingerprint
   meerkat-agent enroll [--dir][--addr] print the app enrollment details
+  meerkat-agent config relay set --enrollment-code CODE [--dir]
   meerkat-agent config relay set --backend-url URL --server-id ID --user-profile-id ID [--dir]
   meerkat-agent config relay show [--dir]
   meerkat-agent config relay remove [--dir]
