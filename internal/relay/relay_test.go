@@ -36,6 +36,9 @@ func TestRunnerFetchesSettingsAndPostsSnapshot(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/agent/settings":
 			settingsRequested.Store(true)
+			if got := r.Header.Get("Authorization"); got != "Bearer relay-token" {
+				t.Fatalf("settings authorization header = %q", got)
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"settings": map[string]string{
 					SnapshotIntervalKey:     "1",

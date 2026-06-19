@@ -130,6 +130,7 @@ func (r Runner) fetchSettings(ctx context.Context, client *http.Client) (map[str
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(r.RelayToken))
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
