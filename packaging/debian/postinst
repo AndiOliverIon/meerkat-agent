@@ -30,7 +30,20 @@ configure)
 	echo
 	echo "Meerkat agent installed."
 	echo "Paste this into the Meerkat app:"
-	if ! /usr/bin/meerkat-agent enroll --dir /var/lib/meerkat-agent; then
+	if command -v runuser >/dev/null 2>&1; then
+		if runuser -u meerkat-agent -- /usr/bin/meerkat-agent enroll --dir /var/lib/meerkat-agent; then
+			enroll_status=0
+		else
+			enroll_status=$?
+		fi
+	else
+		if su -s /bin/sh meerkat-agent -c '/usr/bin/meerkat-agent enroll --dir /var/lib/meerkat-agent'; then
+			enroll_status=0
+		else
+			enroll_status=$?
+		fi
+	fi
+	if [ "$enroll_status" -ne 0 ]; then
 		echo "meerkat-agent: warning: could not print enrollment details during install." >&2
 		echo "meerkat-agent: run this later after checking /var/lib/meerkat-agent permissions:" >&2
 		echo "  sudo meerkat-agent enroll --addr YOUR_PUBLIC_IP_OR_DNS:8765" >&2
