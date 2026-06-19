@@ -23,3 +23,11 @@ func TestRelayConfigForDisplayRedactsToken(t *testing.T) {
 		t.Fatalf("non-secret fields changed: %+v", cfg)
 	}
 }
+
+func TestRelayTokenFromEnvTrimsWhitespace(t *testing.T) {
+	t.Setenv("MEERKAT_RELAY_TOKEN", " secret-token \n")
+
+	if got := relayTokenFromEnv(); got != "secret-token" {
+		t.Fatalf("relayTokenFromEnv() = %q, want secret-token", got)
+	}
+}

@@ -98,7 +98,7 @@ sudo apt upgrade
 ```sh
 meerkat-agent once                      collect one snapshot and print JSON
 meerkat-agent serve [--addr][--dir]     serve HTTPS API, default :8765
-meerkat-agent relay [--dir] [--backend-url URL --server-id ID --relay-token TOKEN]
+meerkat-agent relay [--dir] [--backend-url URL --server-id ID]
                                         push snapshots to Meerkat relay
 meerkat-agent gen-cert [--dir]          generate TLS cert/key if absent
 meerkat-agent gen-token [--dir]         generate bearer token if absent
@@ -108,7 +108,7 @@ meerkat-agent fingerprint [--dir]       print TLS cert fingerprint
 meerkat-agent enroll [--dir][--addr]    print app enrollment details
 meerkat-agent config remove-mssql [--dir] <container>
 meerkat-agent config relay set --enrollment-code CODE [--dir]
-meerkat-agent config relay set --backend-url URL --server-id ID --relay-token TOKEN
+MEERKAT_RELAY_TOKEN=TOKEN meerkat-agent config relay set --backend-url URL --server-id ID
 meerkat-agent config relay show [--dir]
 meerkat-agent config relay remove [--dir]
 meerkat-agent version                   print version
@@ -154,10 +154,9 @@ generated enrollment command is preferred because it returns a server-scoped
 relay token.
 
 ```sh
-sudo meerkat-agent config relay set \
+sudo env MEERKAT_RELAY_TOKEN=RELAY_TOKEN meerkat-agent config relay set \
   --backend-url https://api.meerkat.tnisoft.ro \
-  --server-id SERVER_ID \
-  --relay-token RELAY_TOKEN
+  --server-id SERVER_ID
 ```
 
 Start the supervised relay service:
@@ -174,13 +173,14 @@ The relay service starts only when `/var/lib/meerkat-agent/relay.json` exists
 and uses `Restart=always` so systemd brings it back after failures.
 
 For development or one-off tests, relay values can be passed as flags instead
-of saving config:
+of saving config. Pass the relay token through `MEERKAT_RELAY_TOKEN` so it does
+not appear in the process list:
 
 ```sh
+MEERKAT_RELAY_TOKEN=RELAY_TOKEN \
 meerkat-agent relay \
   --backend-url http://127.0.0.1:5281 \
-  --server-id SERVER_ID \
-  --relay-token RELAY_TOKEN
+  --server-id SERVER_ID
 ```
 
 ### Optional MSSQL inventory
@@ -203,6 +203,12 @@ services, mutate databases, or execute user workload changes.
 SQL memory-pressure signals may require the monitoring login to have
 `VIEW SERVER STATE`; without that permission the agent omits `sqlServers`
 rather than guessing.
+
+MSSQL inventory passwords are encrypted with a per-install key stored as
+`/var/lib/meerkat-agent/mssql-inventory.key`. If that key is lost, the stored
+passwords cannot be recovered. Remove the MSSQL inventory entry and add the SQL
+credentials again from the app; rotate the SQL login in SQL Server if exposure
+is suspected.
 
 To revoke stored MSSQL inventory credentials later:
 
