@@ -37,10 +37,12 @@ type MSSQLInventorySummary struct {
 }
 
 type RelayConfig struct {
-	BackendURL    string    `json:"backendUrl"`
-	ServerID      string    `json:"serverId"`
-	UserProfileID string    `json:"userProfileId"`
-	UpdatedAt     time.Time `json:"updatedAt"`
+	BackendURL          string     `json:"backendUrl"`
+	ServerID            string     `json:"serverId"`
+	UserProfileID       string     `json:"userProfileId"`
+	RelayToken          string     `json:"relayToken"`
+	RelayTokenExpiresAt *time.Time `json:"relayTokenExpiresAt,omitempty"`
+	UpdatedAt           time.Time  `json:"updatedAt"`
 }
 
 func MSSQLInventoryPath(dir string) string {
@@ -75,8 +77,8 @@ func SaveRelayConfig(dir string, cfg RelayConfig) error {
 	if cfg.ServerID == "" {
 		return errors.New("server id is required")
 	}
-	if cfg.UserProfileID == "" {
-		return errors.New("user profile id is required")
+	if cfg.RelayToken == "" {
+		return errors.New("relay token is required")
 	}
 	cfg.UpdatedAt = time.Now().UTC()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -103,6 +105,7 @@ func (cfg *RelayConfig) trim() {
 	cfg.BackendURL = strings.TrimSpace(cfg.BackendURL)
 	cfg.ServerID = strings.TrimSpace(cfg.ServerID)
 	cfg.UserProfileID = strings.TrimSpace(cfg.UserProfileID)
+	cfg.RelayToken = strings.TrimSpace(cfg.RelayToken)
 }
 
 func LoadMSSQLInventories(dir string) ([]MSSQLInventory, error) {

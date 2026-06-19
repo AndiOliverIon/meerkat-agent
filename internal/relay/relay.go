@@ -61,6 +61,7 @@ type Runner struct {
 	BackendURL    string
 	ServerID      string
 	UserProfileID string
+	RelayToken    string
 	Collector     *collect.Collector
 	Client        *http.Client
 	Logger        *log.Logger
@@ -73,8 +74,8 @@ func (r Runner) Run(ctx context.Context) error {
 	if strings.TrimSpace(r.ServerID) == "" {
 		return errors.New("server id is required")
 	}
-	if strings.TrimSpace(r.UserProfileID) == "" {
-		return errors.New("user profile id is required")
+	if strings.TrimSpace(r.RelayToken) == "" {
+		return errors.New("relay token is required")
 	}
 	collector := r.Collector
 	if collector == nil {
@@ -164,7 +165,7 @@ func (r Runner) pushSnapshot(ctx context.Context, client *http.Client, collector
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Meerkat-User-ID", r.UserProfileID)
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(r.RelayToken))
 	resp, err := client.Do(req)
 	if err != nil {
 		return err

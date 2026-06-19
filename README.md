@@ -98,7 +98,7 @@ sudo apt upgrade
 ```sh
 meerkat-agent once                      collect one snapshot and print JSON
 meerkat-agent serve [--addr][--dir]     serve HTTPS API, default :8765
-meerkat-agent relay [--dir] [--backend-url URL --server-id ID --user-profile-id ID]
+meerkat-agent relay [--dir] [--backend-url URL --server-id ID --relay-token TOKEN]
                                         push snapshots to Meerkat relay
 meerkat-agent gen-cert [--dir]          generate TLS cert/key if absent
 meerkat-agent gen-token [--dir]         generate bearer token if absent
@@ -108,7 +108,7 @@ meerkat-agent fingerprint [--dir]       print TLS cert fingerprint
 meerkat-agent enroll [--dir][--addr]    print app enrollment details
 meerkat-agent config remove-mssql [--dir] <container>
 meerkat-agent config relay set --enrollment-code CODE [--dir]
-meerkat-agent config relay set --backend-url URL --server-id ID --user-profile-id ID
+meerkat-agent config relay set --backend-url URL --server-id ID --relay-token TOKEN
 meerkat-agent config relay show [--dir]
 meerkat-agent config relay remove [--dir]
 meerkat-agent version                   print version
@@ -149,13 +149,15 @@ Relay mode pushes snapshots outbound to the Meerkat backend. This is the Pro
 path: the VPS agent remains the source of truth, and the relay stores the latest
 snapshot for the app to read.
 
-Configure relay identity on the VPS:
+Configure relay identity on the VPS only for development or recovery. The app
+generated enrollment command is preferred because it returns a server-scoped
+relay token.
 
 ```sh
 sudo meerkat-agent config relay set \
   --backend-url https://api.meerkat.tnisoft.ro \
   --server-id SERVER_ID \
-  --user-profile-id USER_PROFILE_ID
+  --relay-token RELAY_TOKEN
 ```
 
 Start the supervised relay service:
@@ -178,7 +180,7 @@ of saving config:
 meerkat-agent relay \
   --backend-url http://127.0.0.1:5281 \
   --server-id SERVER_ID \
-  --user-profile-id USER_PROFILE_ID
+  --relay-token RELAY_TOKEN
 ```
 
 ### Optional MSSQL inventory

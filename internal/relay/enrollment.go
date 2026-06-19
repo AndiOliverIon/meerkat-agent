@@ -79,17 +79,21 @@ func ConsumeEnrollmentCode(ctx context.Context, encoded string, fingerprint stri
 		return agentconfig.RelayConfig{}, fmt.Errorf("relay enrollment status %d", resp.StatusCode)
 	}
 	var payload struct {
-		BackendURL    string `json:"backendUrl"`
-		ServerID      string `json:"serverId"`
-		UserProfileID string `json:"userProfileId"`
+		BackendURL          string     `json:"backendUrl"`
+		ServerID            string     `json:"serverId"`
+		UserProfileID       string     `json:"userProfileId"`
+		RelayToken          string     `json:"relayToken"`
+		RelayTokenExpiresAt *time.Time `json:"relayTokenExpiresAt,omitempty"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 64*1024)).Decode(&payload); err != nil {
 		return agentconfig.RelayConfig{}, err
 	}
 	cfg := agentconfig.RelayConfig{
-		BackendURL:    strings.TrimRight(strings.TrimSpace(payload.BackendURL), "/"),
-		ServerID:      strings.TrimSpace(payload.ServerID),
-		UserProfileID: strings.TrimSpace(payload.UserProfileID),
+		BackendURL:          strings.TrimRight(strings.TrimSpace(payload.BackendURL), "/"),
+		ServerID:            strings.TrimSpace(payload.ServerID),
+		UserProfileID:       strings.TrimSpace(payload.UserProfileID),
+		RelayToken:          strings.TrimSpace(payload.RelayToken),
+		RelayTokenExpiresAt: payload.RelayTokenExpiresAt,
 	}
 	if cfg.BackendURL == "" {
 		cfg.BackendURL = code.BackendURL

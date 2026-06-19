@@ -44,6 +44,7 @@ func TestRelayConfigRoundTrip(t *testing.T) {
 		BackendURL:    " http://127.0.0.1:5281 ",
 		ServerID:      " server-1 ",
 		UserProfileID: " profile-1 ",
+		RelayToken:    " relay-token ",
 	}
 	if err := SaveRelayConfig(dir, cfg); err != nil {
 		t.Fatal(err)
@@ -53,7 +54,7 @@ func TestRelayConfigRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.BackendURL != "http://127.0.0.1:5281" || got.ServerID != "server-1" || got.UserProfileID != "profile-1" {
+	if got.BackendURL != "http://127.0.0.1:5281" || got.ServerID != "server-1" || got.UserProfileID != "profile-1" || got.RelayToken != "relay-token" {
 		t.Fatalf("relay config = %#v", got)
 	}
 	if got.UpdatedAt.IsZero() {

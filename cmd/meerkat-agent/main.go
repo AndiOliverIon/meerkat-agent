@@ -68,7 +68,8 @@ func main() {
 		dir := fs.String("dir", identity.DefaultDir, "identity/config dir")
 		backendURL := fs.String("backend-url", "", "Meerkat backend base URL")
 		serverID := fs.String("server-id", "", "Meerkat backend server id")
-		userProfileID := fs.String("user-profile-id", "", "temporary dev user profile id")
+		userProfileID := fs.String("user-profile-id", "", "optional backend owner profile id metadata")
+		relayToken := fs.String("relay-token", "", "Meerkat relay bearer token")
 		_ = fs.Parse(os.Args[2:])
 		cfg, err := agentconfig.LoadRelayConfig(*dir)
 		if err != nil && !errors.Is(err, agentconfig.ErrRelayConfigNotFound) {
@@ -83,12 +84,16 @@ func main() {
 		if *userProfileID != "" {
 			cfg.UserProfileID = *userProfileID
 		}
+		if *relayToken != "" {
+			cfg.RelayToken = *relayToken
+		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		runner := relay.Runner{
 			BackendURL:    cfg.BackendURL,
 			ServerID:      cfg.ServerID,
 			UserProfileID: cfg.UserProfileID,
+			RelayToken:    cfg.RelayToken,
 			Collector:     collect.New(*dir),
 		}
 		if err := runner.Run(ctx); err != nil {
@@ -217,7 +222,8 @@ func relayConfigCommand(args []string) {
 		enrollmentCode := fs.String("enrollment-code", "", "Meerkat relay enrollment code")
 		backendURL := fs.String("backend-url", "", "Meerkat backend base URL")
 		serverID := fs.String("server-id", "", "Meerkat backend server id")
-		userProfileID := fs.String("user-profile-id", "", "temporary dev user profile id")
+		userProfileID := fs.String("user-profile-id", "", "optional backend owner profile id metadata")
+		relayToken := fs.String("relay-token", "", "Meerkat relay bearer token")
 		_ = fs.Parse(args[1:])
 		var cfg agentconfig.RelayConfig
 		if strings.TrimSpace(*enrollmentCode) != "" {
@@ -235,6 +241,7 @@ func relayConfigCommand(args []string) {
 				BackendURL:    *backendURL,
 				ServerID:      *serverID,
 				UserProfileID: *userProfileID,
+				RelayToken:    *relayToken,
 			}
 		}
 		if err := agentconfig.SaveRelayConfig(*dir, cfg); err != nil {
@@ -348,7 +355,7 @@ func usage() {
 usage:
   meerkat-agent once                 collect one snapshot and print JSON
   meerkat-agent serve [--addr][--dir] serve GET /v1/status over HTTPS (default :8765)
-  meerkat-agent relay --backend-url URL --server-id ID --user-profile-id ID [--dir] push snapshots to Meerkat relay
+  meerkat-agent relay --backend-url URL --server-id ID --relay-token TOKEN [--dir] push snapshots to Meerkat relay
   meerkat-agent gen-cert [--dir]     generate the TLS cert/key if absent (install hook)
   meerkat-agent gen-token [--dir]    generate the bearer token if absent (install hook)
   meerkat-agent rotate-token [--dir][--addr] replace token and print enrollment details
@@ -356,7 +363,7 @@ usage:
   meerkat-agent fingerprint [--dir]  print the TLS cert fingerprint
   meerkat-agent enroll [--dir][--addr] print the app enrollment details
   meerkat-agent config relay set --enrollment-code CODE [--dir]
-  meerkat-agent config relay set --backend-url URL --server-id ID --user-profile-id ID [--dir]
+  meerkat-agent config relay set --backend-url URL --server-id ID --relay-token TOKEN [--dir]
   meerkat-agent config relay show [--dir]
   meerkat-agent config relay remove [--dir]
   meerkat-agent config remove-mssql [--dir] <container>

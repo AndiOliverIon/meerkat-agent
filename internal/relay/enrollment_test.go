@@ -43,6 +43,7 @@ func TestConsumeEnrollmentCodeReturnsRelayConfig(t *testing.T) {
 			"backendUrl":    serverURL(r),
 			"serverId":      "server-1",
 			"userProfileId": "profile-1",
+			"relayToken":    "relay-token",
 		})
 	}))
 	defer server.Close()
@@ -55,7 +56,7 @@ func TestConsumeEnrollmentCodeReturnsRelayConfig(t *testing.T) {
 	if !sawFingerprint {
 		t.Fatal("fingerprint/version were not sent")
 	}
-	if cfg.BackendURL != server.URL || cfg.ServerID != "server-1" || cfg.UserProfileID != "profile-1" {
+	if cfg.BackendURL != server.URL || cfg.ServerID != "server-1" || cfg.UserProfileID != "profile-1" || cfg.RelayToken != "relay-token" {
 		t.Fatalf("cfg = %+v", cfg)
 	}
 }

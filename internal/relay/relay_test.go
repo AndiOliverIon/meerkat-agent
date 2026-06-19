@@ -44,8 +44,11 @@ func TestRunnerFetchesSettingsAndPostsSnapshot(t *testing.T) {
 			})
 		case "/v1/servers/server-1/snapshot":
 			snapshotPosted.Store(true)
-			if got := r.Header.Get("X-Meerkat-User-ID"); got != "profile-1" {
-				t.Fatalf("user header = %q", got)
+			if got := r.Header.Get("Authorization"); got != "Bearer relay-token" {
+				t.Fatalf("authorization header = %q", got)
+			}
+			if got := r.Header.Get("X-Meerkat-User-ID"); got != "" {
+				t.Fatalf("legacy user header = %q", got)
 			}
 			w.WriteHeader(http.StatusNoContent)
 		default:
@@ -60,6 +63,7 @@ func TestRunnerFetchesSettingsAndPostsSnapshot(t *testing.T) {
 		BackendURL:    server.URL,
 		ServerID:      "server-1",
 		UserProfileID: "profile-1",
+		RelayToken:    "relay-token",
 		Collector:     collect.New(t.TempDir()),
 		Client:        server.Client(),
 	}
