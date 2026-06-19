@@ -263,7 +263,7 @@ func relayConfigCommand(args []string) {
 			}
 			fatal("config relay show:", err)
 		}
-		out, err := json.MarshalIndent(cfg, "", "  ")
+		out, err := json.MarshalIndent(relayConfigForDisplay(cfg), "", "  ")
 		if err != nil {
 			fatal("config relay show:", err)
 		}
@@ -285,6 +285,13 @@ func relayConfigCommand(args []string) {
 		usage()
 		os.Exit(2)
 	}
+}
+
+func relayConfigForDisplay(cfg agentconfig.RelayConfig) agentconfig.RelayConfig {
+	if strings.TrimSpace(cfg.RelayToken) != "" {
+		cfg.RelayToken = "redacted"
+	}
+	return cfg
 }
 
 // printEnrollment prints the copy-paste details the user enters in the app:
