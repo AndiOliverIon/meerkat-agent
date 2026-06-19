@@ -31,6 +31,28 @@ func TestSettingsFromMapOverridesAgentValues(t *testing.T) {
 	}
 }
 
+func TestNextPushDelayBacksOffAndResets(t *testing.T) {
+	delay, backoff := nextPushDelay(time.Minute, 0, true)
+	if delay != time.Minute || backoff != time.Minute {
+		t.Fatalf("first failure delay=%s backoff=%s, want 1m", delay, backoff)
+	}
+
+	delay, backoff = nextPushDelay(time.Minute, backoff, true)
+	if delay != 2*time.Minute || backoff != 2*time.Minute {
+		t.Fatalf("second failure delay=%s backoff=%s, want 2m", delay, backoff)
+	}
+
+	delay, backoff = nextPushDelay(time.Minute, 20*time.Minute, true)
+	if delay != maxPushFailureBackoff || backoff != maxPushFailureBackoff {
+		t.Fatalf("capped failure delay=%s backoff=%s, want %s", delay, backoff, maxPushFailureBackoff)
+	}
+
+	delay, backoff = nextPushDelay(time.Minute, backoff, false)
+	if delay != time.Minute || backoff != 0 {
+		t.Fatalf("success delay=%s backoff=%s, want interval and reset", delay, backoff)
+	}
+}
+
 func TestRunnerFetchesSettingsAndPostsSnapshot(t *testing.T) {
 	var settingsRequested, snapshotPosted atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

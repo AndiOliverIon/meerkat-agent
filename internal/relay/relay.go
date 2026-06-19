@@ -20,6 +20,7 @@ import (
 const (
 	SnapshotIntervalKey     = "agent.snapshot_push_interval_seconds"
 	SettingsRefreshEveryKey = "agent.settings_refresh_every_pushes"
+	maxPushFailureBackoff   = 15 * time.Minute
 )
 
 type Settings struct {
@@ -98,6 +99,7 @@ func (r Runner) Run(ctx context.Context) error {
 
 	settings := DefaultSettings()
 	pushesSinceSettings := settings.SettingsRefreshEvery
+	pushFailureBackoff := time.Duration(0)
 	for {
 		if err := r.requireValidRelayToken(now()); err != nil {
 			return err
@@ -114,17 +116,22 @@ func (r Runner) Run(ctx context.Context) error {
 
 		if err := r.pushSnapshot(ctx, client, collector); err != nil {
 			logger.Printf("meerkat-agent relay push: %v", err)
+			var delay time.Duration
+			delay, pushFailureBackoff = nextPushDelay(settings.SnapshotPushInterval, pushFailureBackoff, true)
+			logger.Printf("meerkat-agent relay push: retrying in %s", delay)
+			pushesSinceSettings++
+			if !sleepContext(ctx, delay) {
+				return nil
+			}
+			continue
 		} else {
+			_, pushFailureBackoff = nextPushDelay(settings.SnapshotPushInterval, pushFailureBackoff, false)
 			logger.Print("meerkat-agent relay push: uploaded latest snapshot")
 		}
 		pushesSinceSettings++
 
-		timer := time.NewTimer(settings.SnapshotPushInterval)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
+		if !sleepContext(ctx, settings.SnapshotPushInterval) {
 			return nil
-		case <-timer.C:
 		}
 	}
 }
@@ -137,6 +144,31 @@ func (r Runner) requireValidRelayToken(now time.Time) error {
 		return nil
 	}
 	return fmt.Errorf("relay token expired at %s; run meerkat-agent config relay set --enrollment-code CODE to re-enroll", r.RelayTokenExpiresAt.UTC().Format(time.RFC3339))
+}
+
+func nextPushDelay(snapshotInterval time.Duration, currentBackoff time.Duration, failed bool) (time.Duration, time.Duration) {
+	if !failed {
+		return snapshotInterval, 0
+	}
+	next := currentBackoff * 2
+	if next <= 0 {
+		next = snapshotInterval
+	}
+	if next > maxPushFailureBackoff {
+		next = maxPushFailureBackoff
+	}
+	return next, next
+}
+
+func sleepContext(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 func (r Runner) fetchSettings(ctx context.Context, client *http.Client) (map[string]string, error) {
