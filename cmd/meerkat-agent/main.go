@@ -90,11 +90,12 @@ func main() {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		runner := relay.Runner{
-			BackendURL:    cfg.BackendURL,
-			ServerID:      cfg.ServerID,
-			UserProfileID: cfg.UserProfileID,
-			RelayToken:    cfg.RelayToken,
-			Collector:     collect.New(*dir),
+			BackendURL:          cfg.BackendURL,
+			ServerID:            cfg.ServerID,
+			UserProfileID:       cfg.UserProfileID,
+			RelayToken:          cfg.RelayToken,
+			RelayTokenExpiresAt: cfg.RelayTokenExpiresAt,
+			Collector:           collect.New(*dir),
 		}
 		if err := runner.Run(ctx); err != nil {
 			fatal("relay:", err)

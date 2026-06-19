@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -63,12 +64,13 @@ func TestRunnerFetchesSettingsAndPostsSnapshot(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	runner := Runner{
-		BackendURL:    server.URL,
-		ServerID:      "server-1",
-		UserProfileID: "profile-1",
-		RelayToken:    "relay-token",
-		Collector:     collect.New(t.TempDir()),
-		Client:        server.Client(),
+		BackendURL:          server.URL,
+		ServerID:            "server-1",
+		UserProfileID:       "profile-1",
+		RelayToken:          "relay-token",
+		RelayTokenExpiresAt: ptrTime(time.Now().Add(time.Hour)),
+		Collector:           collect.New(t.TempDir()),
+		Client:              server.Client(),
 	}
 
 	done := make(chan error, 1)
@@ -88,4 +90,39 @@ func TestRunnerFetchesSettingsAndPostsSnapshot(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestRunnerStopsWhenRelayTokenExpired(t *testing.T) {
+	var requested atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requested.Store(true)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	runner := Runner{
+		BackendURL:          server.URL,
+		ServerID:            "server-1",
+		RelayToken:          "relay-token",
+		RelayTokenExpiresAt: ptrTime(time.Unix(1_700_000_000, 0)),
+		Collector:           collect.New(t.TempDir()),
+		Client:              server.Client(),
+		Now:                 func() time.Time { return time.Unix(1_700_000_001, 0) },
+	}
+
+	err := runner.Run(context.Background())
+
+	if err == nil {
+		t.Fatal("Run succeeded with expired relay token")
+	}
+	if !strings.Contains(err.Error(), "re-enroll") {
+		t.Fatalf("error = %q, want re-enroll guidance", err.Error())
+	}
+	if requested.Load() {
+		t.Fatal("runner made HTTP request with expired relay token")
+	}
+}
+
+func ptrTime(value time.Time) *time.Time {
+	return &value
 }

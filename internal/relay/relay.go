@@ -58,13 +58,15 @@ func SettingsFromMap(values map[string]string, fallback Settings) Settings {
 }
 
 type Runner struct {
-	BackendURL    string
-	ServerID      string
-	UserProfileID string
-	RelayToken    string
-	Collector     *collect.Collector
-	Client        *http.Client
-	Logger        *log.Logger
+	BackendURL          string
+	ServerID            string
+	UserProfileID       string
+	RelayToken          string
+	RelayTokenExpiresAt *time.Time
+	Collector           *collect.Collector
+	Client              *http.Client
+	Logger              *log.Logger
+	Now                 func() time.Time
 }
 
 func (r Runner) Run(ctx context.Context) error {
@@ -76,6 +78,10 @@ func (r Runner) Run(ctx context.Context) error {
 	}
 	if strings.TrimSpace(r.RelayToken) == "" {
 		return errors.New("relay token is required")
+	}
+	now := r.Now
+	if now == nil {
+		now = time.Now
 	}
 	collector := r.Collector
 	if collector == nil {
@@ -93,6 +99,9 @@ func (r Runner) Run(ctx context.Context) error {
 	settings := DefaultSettings()
 	pushesSinceSettings := settings.SettingsRefreshEvery
 	for {
+		if err := r.requireValidRelayToken(now()); err != nil {
+			return err
+		}
 		if pushesSinceSettings >= settings.SettingsRefreshEvery {
 			if remote, err := r.fetchSettings(ctx, client); err != nil {
 				logger.Printf("meerkat-agent relay settings: %v", err)
@@ -118,6 +127,16 @@ func (r Runner) Run(ctx context.Context) error {
 		case <-timer.C:
 		}
 	}
+}
+
+func (r Runner) requireValidRelayToken(now time.Time) error {
+	if r.RelayTokenExpiresAt == nil {
+		return nil
+	}
+	if now.Before(*r.RelayTokenExpiresAt) {
+		return nil
+	}
+	return fmt.Errorf("relay token expired at %s; run meerkat-agent config relay set --enrollment-code CODE to re-enroll", r.RelayTokenExpiresAt.UTC().Format(time.RFC3339))
 }
 
 func (r Runner) fetchSettings(ctx context.Context, client *http.Client) (map[string]string, error) {
