@@ -3,6 +3,8 @@ Description=Meerkat Agent Relay
 After=network-online.target
 Wants=network-online.target
 ConditionPathExists=/var/lib/meerkat-agent/relay.json
+StartLimitIntervalSec=10min
+StartLimitBurst=6
 
 [Service]
 Type=simple
