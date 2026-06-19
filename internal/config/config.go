@@ -3,8 +3,13 @@
 package config
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,8 +20,10 @@ import (
 )
 
 const mssqlFile = "mssql-inventory.json"
+const mssqlKeyFile = "mssql-inventory.key"
 const relayFile = "relay.json"
 const maxMSSQLInventories = 25
+const mssqlPasswordCipherVersion byte = 1
 
 var mssqlInventoryMu sync.Mutex
 
@@ -28,6 +35,14 @@ type MSSQLInventory struct {
 	Username  string    `json:"username"`
 	Password  string    `json:"password"`
 	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+type persistedMSSQLInventory struct {
+	Container         string    `json:"container"`
+	Username          string    `json:"username"`
+	Password          string    `json:"password,omitempty"`
+	PasswordEncrypted string    `json:"passwordEncrypted,omitempty"`
+	UpdatedAt         time.Time `json:"updatedAt"`
 }
 
 type MSSQLInventorySummary struct {
@@ -47,6 +62,10 @@ type RelayConfig struct {
 
 func MSSQLInventoryPath(dir string) string {
 	return filepath.Join(dir, mssqlFile)
+}
+
+func MSSQLInventoryKeyPath(dir string) string {
+	return filepath.Join(dir, mssqlKeyFile)
 }
 
 func RelayConfigPath(dir string) string {
@@ -116,9 +135,26 @@ func LoadMSSQLInventories(dir string) ([]MSSQLInventory, error) {
 	if err != nil {
 		return nil, err
 	}
-	var configs []MSSQLInventory
-	if err := json.Unmarshal(data, &configs); err != nil {
+	var persisted []persistedMSSQLInventory
+	if err := json.Unmarshal(data, &persisted); err != nil {
 		return nil, err
+	}
+	configs := make([]MSSQLInventory, 0, len(persisted))
+	for _, cfg := range persisted {
+		password := cfg.Password
+		if cfg.PasswordEncrypted != "" {
+			var err error
+			password, err = decryptMSSQLPassword(dir, cfg.PasswordEncrypted)
+			if err != nil {
+				return nil, err
+			}
+		}
+		configs = append(configs, MSSQLInventory{
+			Container: cfg.Container,
+			Username:  cfg.Username,
+			Password:  password,
+			UpdatedAt: cfg.UpdatedAt,
+		})
 	}
 	return configs, nil
 }
@@ -209,10 +245,103 @@ func writeMSSQLInventories(dir string, configs []MSSQLInventory) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(configs, "", "  ")
+	persisted := make([]persistedMSSQLInventory, 0, len(configs))
+	for _, cfg := range configs {
+		encrypted, err := encryptMSSQLPassword(dir, cfg.Password)
+		if err != nil {
+			return err
+		}
+		persisted = append(persisted, persistedMSSQLInventory{
+			Container:         cfg.Container,
+			Username:          cfg.Username,
+			PasswordEncrypted: encrypted,
+			UpdatedAt:         cfg.UpdatedAt,
+		})
+	}
+	data, err := json.MarshalIndent(persisted, "", "  ")
 	if err != nil {
 		return err
 	}
 	data = append(data, '\n')
 	return fileutil.WriteFilePreserveOwner(MSSQLInventoryPath(dir), data, 0o600)
+}
+
+func encryptMSSQLPassword(dir string, password string) (string, error) {
+	aead, err := mssqlPasswordAEAD(dir, true)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, aead.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	ciphertext := aead.Seal(nil, nonce, []byte(password), []byte{mssqlPasswordCipherVersion})
+	envelope := make([]byte, 1+len(nonce)+len(ciphertext))
+	envelope[0] = mssqlPasswordCipherVersion
+	copy(envelope[1:], nonce)
+	copy(envelope[1+len(nonce):], ciphertext)
+	return base64.RawURLEncoding.EncodeToString(envelope), nil
+}
+
+func decryptMSSQLPassword(dir string, encoded string) (string, error) {
+	envelope, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(encoded))
+	if err != nil {
+		return "", err
+	}
+	aead, err := mssqlPasswordAEAD(dir, false)
+	if err != nil {
+		return "", err
+	}
+	if len(envelope) < 1+aead.NonceSize() || envelope[0] != mssqlPasswordCipherVersion {
+		return "", fmt.Errorf("invalid MSSQL password envelope")
+	}
+	nonceStart := 1
+	nonceEnd := nonceStart + aead.NonceSize()
+	plaintext, err := aead.Open(nil, envelope[nonceStart:nonceEnd], envelope[nonceEnd:], []byte{mssqlPasswordCipherVersion})
+	if err != nil {
+		return "", err
+	}
+	return string(plaintext), nil
+}
+
+func mssqlPasswordAEAD(dir string, create bool) (cipher.AEAD, error) {
+	key, err := loadMSSQLPasswordKey(dir, create)
+	if err != nil {
+		return nil, err
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	return cipher.NewGCM(block)
+}
+
+func loadMSSQLPasswordKey(dir string, create bool) ([]byte, error) {
+	path := MSSQLInventoryKeyPath(dir)
+	data, err := os.ReadFile(path)
+	if err == nil {
+		key, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(string(data)))
+		if err != nil {
+			return nil, err
+		}
+		if len(key) != 32 {
+			return nil, fmt.Errorf("invalid MSSQL password key length")
+		}
+		return key, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) || !create {
+		return nil, err
+	}
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	encoded := append([]byte(base64.RawURLEncoding.EncodeToString(key)), '\n')
+	if err := fileutil.WriteFilePreserveOwner(path, encoded, 0o600); err != nil {
+		return nil, err
+	}
+	return key, nil
 }

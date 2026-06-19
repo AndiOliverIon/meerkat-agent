@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -34,6 +35,57 @@ func TestRemoveMSSQLInventory(t *testing.T) {
 	}
 	if _, err := os.Stat(MSSQLInventoryPath(dir)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("config file stat err = %v, want not exist", err)
+	}
+}
+
+func TestMSSQLInventoryPasswordsAreEncryptedAtRest(t *testing.T) {
+	dir := t.TempDir()
+	if err := SaveMSSQLInventory(dir, MSSQLInventory{Container: "sql-a", Username: "reader", Password: "secret-password"}); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(MSSQLInventoryPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "secret-password") {
+		t.Fatalf("inventory file contains plaintext password: %s", string(data))
+	}
+	if !strings.Contains(string(data), "passwordEncrypted") {
+		t.Fatalf("inventory file does not contain encrypted password: %s", string(data))
+	}
+	if _, err := os.Stat(MSSQLInventoryKeyPath(dir)); err != nil {
+		t.Fatalf("key file stat err = %v", err)
+	}
+
+	configs, err := LoadMSSQLInventories(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(configs) != 1 || configs[0].Password != "secret-password" {
+		t.Fatalf("configs = %#v, want decrypted password", configs)
+	}
+}
+
+func TestMSSQLInventoryLoadsLegacyPlaintextPassword(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(MSSQLInventoryPath(dir), []byte(`[
+  {
+    "container": "sql-a",
+    "username": "reader",
+    "password": "legacy-password",
+    "updatedAt": "2026-06-19T10:00:00Z"
+  }
+]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	configs, err := LoadMSSQLInventories(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(configs) != 1 || configs[0].Password != "legacy-password" {
+		t.Fatalf("configs = %#v, want legacy plaintext password", configs)
 	}
 }
 
