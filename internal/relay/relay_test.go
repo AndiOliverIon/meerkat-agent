@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -142,6 +143,68 @@ func TestRunnerStopsWhenRelayTokenExpired(t *testing.T) {
 	}
 	if requested.Load() {
 		t.Fatal("runner made HTTP request with expired relay token")
+	}
+}
+
+func TestRunnerStopsWhenSettingsRejectsRelayToken(t *testing.T) {
+	var snapshotPosted atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/agent/settings":
+			w.WriteHeader(http.StatusUnauthorized)
+		case "/v1/servers/server-1/snapshot":
+			snapshotPosted.Store(true)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	err := Runner{
+		BackendURL: server.URL,
+		ServerID:   "server-1",
+		RelayToken: "relay-token",
+		Collector:  collect.New(t.TempDir()),
+		Client:     server.Client(),
+	}.Run(context.Background())
+
+	if !errors.Is(err, ErrRelayReenrollmentRequired) {
+		t.Fatalf("Run err = %v, want ErrRelayReenrollmentRequired", err)
+	}
+	if snapshotPosted.Load() {
+		t.Fatal("runner posted snapshot after settings rejected relay token")
+	}
+}
+
+func TestRunnerStopsWhenSnapshotRejectsRelayToken(t *testing.T) {
+	var snapshotRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/agent/settings":
+			_ = json.NewEncoder(w).Encode(map[string]any{"settings": map[string]string{}})
+		case "/v1/servers/server-1/snapshot":
+			snapshotRequests.Add(1)
+			w.WriteHeader(http.StatusUnauthorized)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	err := Runner{
+		BackendURL: server.URL,
+		ServerID:   "server-1",
+		RelayToken: "relay-token",
+		Collector:  collect.New(t.TempDir()),
+		Client:     server.Client(),
+	}.Run(context.Background())
+
+	if !errors.Is(err, ErrRelayReenrollmentRequired) {
+		t.Fatalf("Run err = %v, want ErrRelayReenrollmentRequired", err)
+	}
+	if snapshotRequests.Load() != 1 {
+		t.Fatalf("snapshot requests = %d, want 1 terminal attempt", snapshotRequests.Load())
 	}
 }
 

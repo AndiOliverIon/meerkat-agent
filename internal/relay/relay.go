@@ -23,6 +23,8 @@ const (
 	maxPushFailureBackoff   = 15 * time.Minute
 )
 
+var ErrRelayReenrollmentRequired = errors.New("relay re-enrollment required")
+
 type Settings struct {
 	SnapshotPushInterval    time.Duration
 	SettingsRefreshEvery    int
@@ -106,6 +108,10 @@ func (r Runner) Run(ctx context.Context) error {
 		}
 		if pushesSinceSettings >= settings.SettingsRefreshEvery {
 			if remote, err := r.fetchSettings(ctx, client); err != nil {
+				if errors.Is(err, ErrRelayReenrollmentRequired) {
+					logger.Printf("meerkat-agent relay settings: relay token expired or rejected; re-enroll required")
+					return err
+				}
 				logger.Printf("meerkat-agent relay settings: %v", err)
 			} else {
 				settings = SettingsFromMap(remote, settings)
@@ -115,6 +121,10 @@ func (r Runner) Run(ctx context.Context) error {
 		}
 
 		if err := r.pushSnapshot(ctx, client, collector); err != nil {
+			if errors.Is(err, ErrRelayReenrollmentRequired) {
+				logger.Printf("meerkat-agent relay push: relay token expired or rejected; re-enroll required")
+				return err
+			}
 			logger.Printf("meerkat-agent relay push: %v", err)
 			var delay time.Duration
 			delay, pushFailureBackoff = nextPushDelay(settings.SnapshotPushInterval, pushFailureBackoff, true)
@@ -187,6 +197,9 @@ func (r Runner) fetchSettings(ctx context.Context, client *http.Client) (map[str
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, fmt.Errorf("%w: settings status %d", ErrRelayReenrollmentRequired, resp.StatusCode)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("settings status %d", resp.StatusCode)
 	}
@@ -223,6 +236,9 @@ func (r Runner) pushSnapshot(ctx context.Context, client *http.Client, collector
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		return fmt.Errorf("%w: snapshot status %d", ErrRelayReenrollmentRequired, resp.StatusCode)
+	}
 	if resp.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("snapshot status %d", resp.StatusCode)
 	}
