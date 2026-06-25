@@ -22,7 +22,7 @@ import (
 //	-ldflags "-X github.com/AndiOliverIon/meerkat-agent/internal/collect.Version=1.2.0"
 //
 // Source/dev builds keep the default below.
-var Version = "0.0.0-dev"
+var Version = "1.1.0"
 
 // Collector holds the previous counter sample so it can derive CPU% and
 // rates between reads. Safe for concurrent use.
